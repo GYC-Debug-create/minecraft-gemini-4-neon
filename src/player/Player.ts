@@ -1,6 +1,7 @@
 import { BALANCE } from '../config/balance';
 import { BlockPos, PlayerStateSnapshot, Vec3 } from '../core/types';
 import { BlockId } from '../registry/blocks';
+import { Inventory } from './Inventory';
 import { PhysicsBody } from './Physics';
 
 export interface MiningState {
@@ -33,7 +34,6 @@ export class Player implements PhysicsBody {
   saturation = 5;
   oxygen: number = BALANCE.player.maxOxygen;
   maxOxygen: number = BALANCE.player.maxOxygen;
-  armorDefense = 0;
 
   spawnPoint: Vec3;
   dead = false;
@@ -41,10 +41,11 @@ export class Player implements PhysicsBody {
   invincibilityTicks = 0;
   hurtFlashSec = 0;
   attackCooldownTicks = 0;
+  fallPeakY: number;
+  bowChargeSec = 0;
+  chargingBow = false;
 
-  selectedSlot = 0;
-  /** Lightweight block pocket for M2 prior to full M4 Inventory replacement */
-  pocketBlocks: Array<{ blockId: BlockId; count: number } | null> = new Array(9).fill(null);
+  readonly inventory = new Inventory();
 
   mining: MiningState = {
     target: null,
@@ -56,6 +57,19 @@ export class Player implements PhysicsBody {
   constructor(spawn: Vec3) {
     this.pos = { ...spawn };
     this.spawnPoint = { ...spawn };
+    this.fallPeakY = spawn.y;
+  }
+
+  get selectedSlot(): number {
+    return this.inventory.selectedSlot;
+  }
+
+  set selectedSlot(slot: number) {
+    this.inventory.selectHotbar(slot);
+  }
+
+  get armorDefense(): number {
+    return this.inventory.getTotalArmorDefense();
   }
 
   getEyePosition(): Vec3 {
@@ -68,33 +82,6 @@ export class Player implements PhysicsBody {
     this.mining.blockId = BlockId.Air;
     this.mining.elapsedSec = 0;
     this.mining.requiredSec = 1;
-  }
-
-  addPocketBlock(blockId: BlockId): void {
-    for (let i = 0; i < this.pocketBlocks.length; i++) {
-      const slot = this.pocketBlocks[i];
-      if (slot && slot.blockId === blockId && slot.count < 64) {
-        slot.count++;
-        return;
-      }
-    }
-    for (let i = 0; i < this.pocketBlocks.length; i++) {
-      if (!this.pocketBlocks[i]) {
-        this.pocketBlocks[i] = { blockId, count: 1 };
-        return;
-      }
-    }
-  }
-
-  consumeSelectedPocketBlock(): BlockId | null {
-    const slot = this.pocketBlocks[this.selectedSlot];
-    if (!slot || slot.count <= 0) return null;
-    const id = slot.blockId;
-    slot.count--;
-    if (slot.count <= 0) {
-      this.pocketBlocks[this.selectedSlot] = null;
-    }
-    return id;
   }
 
   toSnapshot(): PlayerStateSnapshot {
@@ -117,7 +104,7 @@ export class Player implements PhysicsBody {
       oxygen: this.oxygen,
       maxOxygen: this.maxOxygen,
       armorDefense: this.armorDefense,
-      selectedSlot: this.selectedSlot,
+      selectedSlot: this.inventory.selectedSlot,
       spawnPoint: { ...this.spawnPoint },
       dead: this.dead,
       deathCount: this.deathCount,
