@@ -1,3 +1,4 @@
+import { initializeChunkLight } from '../Lighting';
 import { buildChunkMesh } from '../Mesher';
 import { TerrainGenerator } from '../TerrainGenerator';
 import {
@@ -28,6 +29,7 @@ workerScope.onmessage = (event: MessageEvent<WorkerRequest>): void => {
 
         const t0 = performance.now();
         const chunk = generator.generateChunk(msg.cx, msg.cz);
+        initializeChunkLight(chunk);
         const genMs = performance.now() - t0;
 
         const mesh = buildChunkMesh(

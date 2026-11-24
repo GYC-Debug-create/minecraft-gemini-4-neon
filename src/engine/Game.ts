@@ -22,8 +22,10 @@ import { BlockId, BlockRegistry } from '../registry/blocks';
 import { ItemId, ItemRegistry } from '../registry/items';
 import { chunkKey, worldToChunkCoord } from '../world/Chunk';
 import { GravityBlockSystem } from '../world/GravityBlocks';
+import { propagateCrossChunkLight, updateLightingAt } from '../world/Lighting';
 import { extractNeighborSlices } from '../world/Mesher';
 import { findSafeSpawn } from '../world/TerrainGenerator';
+import { WaterFlowSystem } from '../world/WaterFlow';
 import { World } from '../world/World';
 import { InputManager } from './InputManager';
 import { Renderer } from './Renderer';
@@ -35,6 +37,7 @@ export class Game {
   readonly renderer: Renderer;
   readonly input: InputManager;
   readonly gravityBlocks = new GravityBlockSystem();
+  readonly waterFlow = new WaterFlowSystem();
   world: World;
   worker: WorldWorkerClient;
   player: Player;
@@ -51,6 +54,8 @@ export class Game {
   // Chunk streaming state
   private readonly inflightGen = new Set<string>();
   private readonly inflightMesh = new Set<string>();
+  private readonly remeshAgainAfterInflight = new Set<string>();
+  private readonly priorityRemeshQueue: Array<{ cx: number; cz: number }> = [];
   private readonly remeshQueue: Array<{ cx: number; cz: number }> = [];
   private readonly remeshQueuedSet = new Set<string>();
   private readonly maxInflightGen = 4;
@@ -118,11 +123,13 @@ export class Game {
     });
 
     this.events.on('chunk:dirty', ({ cx, cz }) => {
-      this.enqueueRemesh(cx, cz);
+      this.enqueueRemesh(cx, cz, true);
     });
 
-    this.events.on('block:changed', ({ x, y, z }) => {
+    this.events.on('block:changed', ({ x, y, z, oldId, newId }) => {
+      updateLightingAt(this.world, x, y, z, oldId, newId);
       this.gravityBlocks.enqueueColumnCheck(x, y, z);
+      this.waterFlow.enqueueArea(x, y, z);
     });
 
     attachDebugAPI(this.createDebugAPI());
@@ -138,6 +145,8 @@ export class Game {
     this.renderer.clearAllChunks();
     this.inflightGen.clear();
     this.inflightMesh.clear();
+    this.remeshAgainAfterInflight.clear();
+    this.priorityRemeshQueue.length = 0;
     this.remeshQueue.length = 0;
     this.remeshQueuedSet.clear();
 
@@ -152,11 +161,26 @@ export class Game {
     this.renderHotbar();
   }
 
-  private enqueueRemesh(cx: number, cz: number): void {
+  private enqueueRemesh(cx: number, cz: number, priority = false): void {
     const k = chunkKey(cx, cz);
-    if (this.remeshQueuedSet.has(k) || !this.world.hasChunk(cx, cz)) return;
+    if (!this.world.hasChunk(cx, cz)) return;
+    if (this.inflightMesh.has(k)) {
+      this.remeshAgainAfterInflight.add(k);
+      return;
+    }
+    if (this.remeshQueuedSet.has(k)) {
+      if (priority) {
+        // Promote to priority queue
+        this.priorityRemeshQueue.push({ cx, cz });
+      }
+      return;
+    }
     this.remeshQueuedSet.add(k);
-    this.remeshQueue.push({ cx, cz });
+    if (priority) {
+      this.priorityRemeshQueue.push({ cx, cz });
+    } else {
+      this.remeshQueue.push({ cx, cz });
+    }
   }
 
   private startLoop(): void {
@@ -288,9 +312,20 @@ export class Game {
     if (chunkLoaded && !this.spawnChunkGrounded) {
       this.spawnChunkGrounded = true;
       if (!this.player.flying) {
-        const topY = this.world.getTopSolidY(Math.floor(this.player.pos.x), Math.floor(this.player.pos.z));
+        const sx = Math.floor(this.player.pos.x);
+        const sz = Math.floor(this.player.pos.z);
+        const topY = this.world.getTopSolidY(sx, sz);
         if (this.player.pos.y < topY + 1) {
           this.player.pos.y = topY + 1.02;
+        }
+        // Place a single Spawn Waystone Torch 2 blocks beside world spawn (if air)
+        const tx = sx + 2;
+        const tz = sz;
+        if (this.world.hasChunk(worldToChunkCoord(tx), worldToChunkCoord(tz))) {
+          const ty = this.world.getTopSolidY(tx, tz) + 1;
+          if (this.world.getBlock(tx, ty, tz) === BlockId.Air && !BlockRegistry.isLiquid(this.world.getBlock(tx, ty - 1, tz))) {
+            this.world.setBlock(tx, ty, tz, BlockId.Torch, 0, false);
+          }
         }
       }
     }
@@ -335,6 +370,7 @@ export class Game {
     this.prevRightMouse = rightDown;
 
     this.gravityBlocks.tick(this.world);
+    this.waterFlow.tick(this.world);
     this.entities.update(dt);
     this.input.clearPressedFrame();
   }
@@ -498,6 +534,7 @@ export class Game {
           if ((cand.cx - curPcx) ** 2 + (cand.cz - curPcz) ** 2 > unloadRadiusSq) return;
 
           this.world.setChunk(chunk);
+          propagateCrossChunkLight(this.world, cand.cx, cand.cz);
           this.renderer.setChunkMesh(cand.cx, cand.cz, mesh);
 
           this.enqueueRemesh(cand.cx, cand.cz);
@@ -513,13 +550,23 @@ export class Game {
   }
 
   private processRemeshQueue(): void {
-    while (this.remeshQueue.length > 0 && this.inflightMesh.size < this.maxInflightMesh) {
-      const next = this.remeshQueue.shift()!;
+    while (
+      (this.priorityRemeshQueue.length > 0 || this.remeshQueue.length > 0) &&
+      this.inflightMesh.size < this.maxInflightMesh
+    ) {
+      const next =
+        this.priorityRemeshQueue.length > 0
+          ? this.priorityRemeshQueue.shift()!
+          : this.remeshQueue.shift()!;
       const k = chunkKey(next.cx, next.cz);
       this.remeshQueuedSet.delete(k);
 
       const chunk = this.world.getChunk(next.cx, next.cz);
-      if (!chunk || this.inflightMesh.has(k)) continue;
+      if (!chunk) continue;
+      if (this.inflightMesh.has(k)) {
+        this.remeshAgainAfterInflight.add(k);
+        continue;
+      }
 
       this.inflightMesh.add(k);
       const genWorld = this.world;
@@ -532,6 +579,10 @@ export class Game {
           this.inflightMesh.delete(k);
           if (this.disposed || this.world !== genWorld || !this.world.hasChunk(next.cx, next.cz)) return;
           this.renderer.setChunkMesh(next.cx, next.cz, mesh);
+          if (this.remeshAgainAfterInflight.has(k)) {
+            this.remeshAgainAfterInflight.delete(k);
+            this.enqueueRemesh(next.cx, next.cz, true);
+          }
         })
         .catch(() => {
           this.inflightMesh.delete(k);
@@ -542,15 +593,17 @@ export class Game {
   private updateHudText(): void {
     const biome = this.world.getBiome(this.player.pos.x, this.player.pos.z);
     const stats = this.renderer.getRenderStats();
-    const wStats = this.worker.getStats();
     const targetText = this.currentTarget
       ? `Target: ${BlockRegistry.get(this.currentTarget.blockId).name} (${this.currentTarget.pos.x},${this.currentTarget.pos.y},${this.currentTarget.pos.z})`
       : 'Target: None';
+    const eye = this.player.getEyePosition();
+    const skyL = this.world.getSkyLight(eye.x, eye.y, eye.z);
+    const blkL = this.world.getBlockLight(eye.x, eye.y, eye.z);
     this.hudInfoEl.textContent =
       `STONEROOT | Seed ${this.world.seed} | Biome: ${BIOME_NAMES[biome]} | ` +
       `XYZ: ${this.player.pos.x.toFixed(1)}, ${this.player.pos.y.toFixed(1)}, ${this.player.pos.z.toFixed(1)} | ` +
-      `${targetText} | Chunks: ${this.world.getLoadedChunkCoords().length} | ` +
-      `Calls: ${stats.drawCalls} | Gen: ${wStats.chunkGenAvgMs.toFixed(1)}ms`;
+      `Light: S${skyL}/B${blkL} | Time: ${Math.floor(this.worldTime % DAY_LENGTH_TICKS)} | ` +
+      `${targetText} | Chunks: ${this.world.getLoadedChunkCoords().length} | Calls: ${stats.drawCalls}`;
   }
 
   getPerfMetrics(): PerfMetricsSnapshot {

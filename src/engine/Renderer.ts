@@ -87,6 +87,8 @@ export class Renderer {
 
   // Sky objects
   private readonly skyGroup: THREE.Group;
+  private readonly skyDomeMat: THREE.ShaderMaterial;
+  private readonly starFieldMat: THREE.PointsMaterial;
   private readonly sunMesh: THREE.Mesh;
   private readonly moonMesh: THREE.Mesh;
   private readonly cloudsGroup: THREE.Group;
@@ -174,18 +176,75 @@ export class Renderer {
 
     // Sky group (follows camera XZ)
     this.skyGroup = new THREE.Group();
-    const sunGeo = new THREE.PlaneGeometry(18, 18);
-    const sunMat = new THREE.MeshBasicMaterial({ color: 0xfff2b8, fog: false, depthWrite: false, side: THREE.DoubleSide });
+
+    // Procedural zenith-to-horizon gradient sky dome (sunrise/sunset/day/night smooth transitions)
+    this.skyDomeMat = new THREE.ShaderMaterial({
+      uniforms: {
+        uZenithColor: { value: new THREE.Color(0x4b8ec9) },
+        uHorizonColor: { value: new THREE.Color(0xaed3ec) },
+      },
+      vertexShader: /* glsl */ `
+        varying vec3 vWorldDir;
+        void main() {
+          vWorldDir = normalize(position);
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: /* glsl */ `
+        uniform vec3 uZenithColor;
+        uniform vec3 uHorizonColor;
+        varying vec3 vWorldDir;
+        void main() {
+          float h = clamp(vWorldDir.y, 0.0, 1.0);
+          float factor = pow(h, 0.55);
+          vec3 col = mix(uHorizonColor, uZenithColor, factor);
+          gl_FragColor = vec4(col, 1.0);
+        }
+      `,
+      side: THREE.BackSide,
+      depthWrite: false,
+      fog: false,
+    });
+    const skyDome = new THREE.Mesh(new THREE.SphereGeometry(310, 24, 16), this.skyDomeMat);
+    skyDome.renderOrder = -4;
+
+    // Night starfield
+    const starPositions = new Float32Array(260 * 3);
+    for (let i = 0; i < 260; i++) {
+      // Deterministic Fibonacci-ish upper hemisphere star distribution
+      const phi = Math.acos(0.12 + ((i * 73) % 88) / 100);
+      const theta = i * 2.3999632;
+      const r = 285;
+      starPositions[i * 3] = r * Math.sin(phi) * Math.cos(theta);
+      starPositions[i * 3 + 1] = r * Math.cos(phi);
+      starPositions[i * 3 + 2] = r * Math.sin(phi) * Math.sin(theta);
+    }
+    const starGeo = new THREE.BufferGeometry();
+    starGeo.setAttribute('position', new THREE.BufferAttribute(starPositions, 3));
+    this.starFieldMat = new THREE.PointsMaterial({
+      color: 0xe6eefc,
+      size: 2.2,
+      sizeAttenuation: false,
+      transparent: true,
+      opacity: 0,
+      depthWrite: false,
+      fog: false,
+    });
+    const starField = new THREE.Points(starGeo, this.starFieldMat);
+    starField.renderOrder = -3;
+
+    const sunGeo = new THREE.PlaneGeometry(22, 22);
+    const sunMat = new THREE.MeshBasicMaterial({ color: 0xfff3bc, fog: false, depthWrite: false, side: THREE.DoubleSide });
     this.sunMesh = new THREE.Mesh(sunGeo, sunMat);
     this.sunMesh.renderOrder = -2;
 
-    const moonGeo = new THREE.PlaneGeometry(14, 14);
-    const moonMat = new THREE.MeshBasicMaterial({ color: 0xd9e4f5, fog: false, depthWrite: false, side: THREE.DoubleSide });
+    const moonGeo = new THREE.PlaneGeometry(16, 16);
+    const moonMat = new THREE.MeshBasicMaterial({ color: 0xd9e6fa, fog: false, depthWrite: false, side: THREE.DoubleSide });
     this.moonMesh = new THREE.Mesh(moonGeo, moonMat);
     this.moonMesh.renderOrder = -2;
 
     this.cloudsGroup = this.buildClouds();
-    this.skyGroup.add(this.sunMesh, this.moonMesh, this.cloudsGroup);
+    this.skyGroup.add(skyDome, starField, this.sunMesh, this.moonMesh, this.cloudsGroup);
     this.scene.add(this.skyGroup);
 
     // Selection wireframe box
@@ -366,53 +425,65 @@ export class Renderer {
     const cloudOffset = ((worldTime * 0.025) % 200) - 100;
     this.cloudsGroup.position.x = cloudOffset;
 
-    // Sky & lighting color curves
-    const daySky = new THREE.Color(0x7fb8e2);
-    const duskSky = new THREE.Color(0xd97a4a);
-    const nightSky = new THREE.Color(0x0b1020);
+    // Sky & lighting color curves (zenith + horizon gradient + fog matched to horizon)
+    const dayZenith = new THREE.Color(0x4b8ec9);
+    const dayHorizon = new THREE.Color(0xa6cfe9);
+    const duskZenith = new THREE.Color(0x3a3b6e);
+    const duskHorizon = new THREE.Color(0xe37c46);
+    const nightZenith = new THREE.Color(0x060a16);
+    const nightHorizon = new THREE.Color(0x111a30);
     const waterFog = new THREE.Color(0x1f5678);
 
-    const skyColor = new THREE.Color();
+    const zenithColor = new THREE.Color();
+    const horizonColor = new THREE.Color();
     const skyLight = new THREE.Color();
 
     if (sunHeight >= 0.25) {
-      // Full day
-      skyColor.copy(daySky);
+      zenithColor.copy(dayZenith);
+      horizonColor.copy(dayHorizon);
       skyLight.setRGB(1.0, 0.99, 0.96);
-    } else if (sunHeight >= -0.15) {
-      // Dawn / Dusk smooth blend through warm orange sunset
-      const t = (sunHeight + 0.15) / 0.4; // 0 at dark twilight, 1 at full day
+    } else if (sunHeight >= -0.18) {
+      const t = (sunHeight + 0.18) / 0.43; // 0 at night, 0.5 at sunset peak, 1 at day
       if (t >= 0.5) {
         const k = (t - 0.5) * 2;
-        skyColor.copy(duskSky).lerp(daySky, k);
-        skyLight.setRGB(0.95, 0.58, 0.36).lerp(new THREE.Color(1.0, 0.99, 0.96), k);
+        zenithColor.copy(duskZenith).lerp(dayZenith, k);
+        horizonColor.copy(duskHorizon).lerp(dayHorizon, k);
+        skyLight.setRGB(0.96, 0.56, 0.34).lerp(new THREE.Color(1.0, 0.99, 0.96), k);
       } else {
         const k = t * 2;
-        skyColor.copy(nightSky).lerp(duskSky, k);
-        skyLight.setRGB(0.08, 0.11, 0.21).lerp(new THREE.Color(0.95, 0.58, 0.36), k);
+        zenithColor.copy(nightZenith).lerp(duskZenith, k);
+        horizonColor.copy(nightHorizon).lerp(duskHorizon, k);
+        skyLight.setRGB(0.06, 0.08, 0.16).lerp(new THREE.Color(0.96, 0.56, 0.34), k);
       }
     } else {
-      // Deep night (genuinely dark so torches matter!)
-      skyColor.copy(nightSky);
-      skyLight.setRGB(0.075, 0.10, 0.19);
+      zenithColor.copy(nightZenith);
+      horizonColor.copy(nightHorizon);
+      skyLight.setRGB(0.06, 0.08, 0.16);
     }
+
+    // Star opacity fades smoothly in during dusk -> night
+    this.starFieldMat.opacity = THREE.MathUtils.clamp((-sunHeight + 0.05) * 2.2, 0, 0.92);
 
     const viewDistBlocks = Math.max(3, renderDistance) * CHUNK_SIZE;
     if (underwater) {
       this.scene.background = waterFog;
+      this.skyDomeMat.uniforms.uZenithColor.value.copy(waterFog);
+      this.skyDomeMat.uniforms.uHorizonColor.value.copy(waterFog);
       this.sharedUniforms.uFogColor.value.copy(waterFog);
       this.sharedUniforms.uFogNear.value = 2;
       this.sharedUniforms.uFogFar.value = 26;
     } else {
-      this.scene.background = skyColor;
-      this.sharedUniforms.uFogColor.value.copy(skyColor);
-      this.sharedUniforms.uFogNear.value = viewDistBlocks * 0.58;
+      this.scene.background = horizonColor;
+      this.skyDomeMat.uniforms.uZenithColor.value.copy(zenithColor);
+      this.skyDomeMat.uniforms.uHorizonColor.value.copy(horizonColor);
+      this.sharedUniforms.uFogColor.value.copy(horizonColor);
+      this.sharedUniforms.uFogNear.value = viewDistBlocks * 0.56;
       this.sharedUniforms.uFogFar.value = viewDistBlocks * 1.02;
     }
 
     this.sharedUniforms.uSkyLightColor.value.copy(skyLight);
-    // Keep min ambient subtle so enclosed caves without torches are truly pitch-dark
-    this.sharedUniforms.uMinAmbient.value.setRGB(0.025, 0.028, 0.042);
+    // Keep min ambient genuinely dark so unlit caves & midnight are dark and torches pop
+    this.sharedUniforms.uMinAmbient.value.setRGB(0.02, 0.024, 0.036);
 
     // Sync entity Three.js lighting with day/night
     const daylightScalar = THREE.MathUtils.clamp((sunHeight + 0.15) / 0.5, 0.12, 1.0);

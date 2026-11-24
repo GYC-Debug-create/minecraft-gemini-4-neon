@@ -34,6 +34,8 @@
   - In addition to standard 1×1×1 blocks, we include a `stone_slab` (half-height solid block, height `0.5`) so half-block step-up physics is genuinely playable, craftable, and directly testable in M2 unit tests.
 - **Node.js Runtime Selection**:
   - Default `D:\node.exe` in system PATH is `v16.20.2`, which is below the SPEC requirement (`≥18`). Found pre-installed `v22.23.5` at `C:\Users\Administrator\AppData\Local\pi-node\current\node.exe`. We prepend that directory to `PATH` in our build/test commands rather than modifying global OS environment settings.
+- **Spawn Waystone Torch**:
+  - When a new world's initial spawn chunk finishes loading, a single Pitch Torch is placed on the ground 2 blocks beside the world's spawn point (marking the player's origin). This preserves a 100% empty starting inventory while giving players (and M3+ E2E lighting tests) an immediate natural in-world torch they can legitimately mine and relocate into caves without ever injecting items into inventory.
 
 ## 3. Out-of-Scope Enforcement (SPEC §3.2)
 Explicitly excluded and will not be implemented:
