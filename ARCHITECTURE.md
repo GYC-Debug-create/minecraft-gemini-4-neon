@@ -55,6 +55,7 @@ This document defines the module boundaries, data structures, and public interfa
 | `src/registry/items.ts` | `ItemId` enum + `ItemRegistry` (`getItem`, `getAllItems`, `blockToItem`, `itemToBlock`). |
 | `src/registry/recipes.ts` | Crafting recipes (2×2 / 3×3 shaped & shapeless), smelting recipes, and fuel definitions. Single source of truth for runtime and `README.md` recipe table generation. |
 | `src/registry/loot.ts` | Village chest loot tables and mob drop tables. |
+| `src/registry/textures.ts` | Pure-data 8×8 tile atlas index (`ATLAS_TILES`) and UV lookup (`getTileUV`) shared by Web Worker `Mesher` and main-thread `TextureAtlas`. |
 | `src/world/Chunk.ts` | `Chunk` data container: `blocks: Uint8Array(32768)`, `light: Uint8Array(32768)`, `meta: Uint8Array(32768)`, `biomes: Uint8Array(256)`, dirty/modified flags, serialization helpers. |
 | `src/world/World.ts` | Manages active `Chunk` map, block/meta/light/biome getters & setters, neighbor notifications, falling block & water flow & crop growth queues, container state registry (`ContainerRecord`). |
 | `src/world/Lighting.ts` | Pure BFS sky-light and block-light propagation and incremental updates when blocks change. |
