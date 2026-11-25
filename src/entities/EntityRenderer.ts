@@ -68,14 +68,21 @@ export class EntityRenderer {
     return g;
   }
 
-  sync(entities: readonly Entity[], nowSec: number, customFactory?: (e: Entity) => THREE.Object3D | null): void {
+  sync(
+    entities: readonly Entity[],
+    nowSec: number,
+    customFactory?: (e: Entity) => THREE.Object3D | null,
+    dt = 1 / 60
+  ): void {
     const seen = new Set<number>();
+    const smooth = 1 - Math.exp(-22 * Math.max(0.001, Math.min(0.1, dt)));
 
     for (const e of entities) {
       if (!e.alive) continue;
       seen.add(e.id);
 
       let obj = this.meshes.get(e.id);
+      let isNew = false;
       if (!obj) {
         if (e.kind === 'dropped_item') {
           obj = this.createDroppedItemMesh(e as DroppedItemEntity);
@@ -87,6 +94,7 @@ export class EntityRenderer {
         if (obj) {
           this.group.add(obj);
           this.meshes.set(e.id, obj);
+          isNew = true;
         }
       }
 
@@ -94,7 +102,17 @@ export class EntityRenderer {
 
       if (e.kind === 'dropped_item') {
         const bob = Math.sin(nowSec * 3.5 + e.id) * 0.07;
-        obj.position.set(e.pos.x, e.pos.y + 0.2 + bob, e.pos.z);
+        const ty = e.pos.y + 0.2 + bob;
+        const dx = e.pos.x - obj.position.x;
+        const dy = ty - obj.position.y;
+        const dz = e.pos.z - obj.position.z;
+        if (isNew || dx * dx + dy * dy + dz * dz > 9) {
+          obj.position.set(e.pos.x, ty, e.pos.z);
+        } else {
+          obj.position.x += dx * smooth;
+          obj.position.y += dy * smooth;
+          obj.position.z += dz * smooth;
+        }
         obj.rotation.y = e.yaw;
       } else if (e.kind === 'arrow') {
         const arrow = e as ArrowEntity;
@@ -103,7 +121,16 @@ export class EntityRenderer {
         obj.rotation.y = arrow.yaw;
         obj.rotation.x = arrow.pitch;
       } else {
-        obj.position.set(e.pos.x, e.pos.y, e.pos.z);
+        const dx = e.pos.x - obj.position.x;
+        const dy = e.pos.y - obj.position.y;
+        const dz = e.pos.z - obj.position.z;
+        if (isNew || dx * dx + dy * dy + dz * dz > 9) {
+          obj.position.set(e.pos.x, e.pos.y, e.pos.z);
+        } else {
+          obj.position.x += dx * smooth;
+          obj.position.y += dy * smooth;
+          obj.position.z += dz * smooth;
+        }
         obj.rotation.y = e.yaw;
       }
     }

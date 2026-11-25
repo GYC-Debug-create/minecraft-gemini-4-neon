@@ -125,6 +125,8 @@ export class Game {
   private rafId = 0;
   private lastFrameTs = 0;
   private accumulator = 0;
+  private prevPlayerPos: Vec3 = { x: 0, y: 0, z: 0 };
+  private prevEyeHeight: number = BALANCE.player.eyeHeight;
   private frameJsMs = 0;
   private frameJsHistory: number[] = [];
   private maxFrameJsMs = 0;
@@ -153,6 +155,7 @@ export class Game {
 
     const spawn = findSafeSpawn(seedNum);
     this.player = new Player({ x: spawn.x + 0.5, y: spawn.y + 0.05, z: spawn.z + 0.5 });
+    this.syncPrevPlayerTransform();
 
     // Modular M7 UI: HUD, F3 DebugOverlay, Menus, InventoryUI
     this.hud = new HUD(uiRoot, this.renderer.atlas);
@@ -261,6 +264,7 @@ export class Game {
 
     const spawn = findSafeSpawn(seed);
     this.player = new Player({ x: spawn.x + 0.5, y: spawn.y + 0.05, z: spawn.z + 0.5 });
+    this.syncPrevPlayerTransform();
     this.mode = 'playing';
     this.menus.hideAll();
     this.menus.showMainWarning(null);
@@ -302,6 +306,7 @@ export class Game {
     this.player.fallPeakY = save.player.pos.y;
     this.player.inventory.loadFromSnapshot(save.player.inventory);
     this.containers.loadAll(save.containers);
+    this.syncPrevPlayerTransform();
 
     this.mode = 'playing';
     this.menus.hideAll();
@@ -444,6 +449,7 @@ export class Game {
   respawnPlayer(): void {
     if (!this.player.dead && this.mode !== 'dead') return;
     this.survival.respawnPlayer(this.player, this.events);
+    this.syncPrevPlayerTransform();
     this.menus.hideAll();
     this.mode = 'playing';
     this.syncHeldItemVisual();
@@ -472,15 +478,23 @@ export class Game {
     }
   }
 
+  private syncPrevPlayerTransform(): void {
+    this.prevPlayerPos.x = this.player.pos.x;
+    this.prevPlayerPos.y = this.player.pos.y;
+    this.prevPlayerPos.z = this.player.pos.z;
+    this.prevEyeHeight = this.player.getEyeHeight();
+  }
+
   private startLoop(): void {
-    this.lastFrameTs = performance.now();
-    this.fpsWindowStart = this.lastFrameTs;
+    this.lastFrameTs = 0;
+    this.fpsWindowStart = performance.now();
 
     const tick = (now: number): void => {
       if (this.disposed) return;
       this.rafId = requestAnimationFrame(tick);
 
       const jsStart = performance.now();
+      if (this.lastFrameTs === 0) this.lastFrameTs = now;
       const rawDt = Math.min(0.1, Math.max(0.001, (now - this.lastFrameTs) / 1000));
       this.lastFrameTs = now;
 
@@ -489,19 +503,34 @@ export class Game {
       this.accumulator += rawDt;
       let steps = 0;
       while (this.accumulator >= FIXED_DT && steps < 4) {
+        this.syncPrevPlayerTransform();
         this.stepFixed(FIXED_DT);
         this.accumulator -= FIXED_DT;
         steps++;
+      }
+      if (this.accumulator > FIXED_DT) {
+        this.accumulator = FIXED_DT;
       }
 
       this.drainCompletedWorkerResults(jsStart);
       this.streamChunks();
       this.processRemeshQueue(jsStart);
 
+      // Sub-tick render interpolation turns 20Hz deterministic physics into silky 60/120/144Hz camera motion
+      const alpha = this.mode === 'playing' ? Math.max(0, Math.min(1, this.accumulator / FIXED_DT)) : 1;
+      const curEyeH = this.player.getEyeHeight();
+      const interpEye = {
+        x: this.prevPlayerPos.x + (this.player.pos.x - this.prevPlayerPos.x) * alpha,
+        y:
+          this.prevPlayerPos.y +
+          (this.player.pos.y - this.prevPlayerPos.y) * alpha +
+          (this.prevEyeHeight + (curEyeH - this.prevEyeHeight) * alpha),
+        z: this.prevPlayerPos.z + (this.player.pos.z - this.prevPlayerPos.z) * alpha,
+      };
       const eye =
         this.mode === 'menu'
           ? { x: this.player.pos.x, y: this.player.pos.y + 18, z: this.player.pos.z }
-          : this.player.getEyePosition();
+          : interpEye;
       const camYaw = this.mode === 'menu' ? (now * 0.00012) % (Math.PI * 2) : this.player.yaw;
       const camPitch = this.mode === 'menu' ? -0.34 : this.player.pitch;
       const horizSpeed = Math.hypot(this.player.vel.x, this.player.vel.z);
@@ -517,12 +546,17 @@ export class Game {
       this.particles.update(rawDt);
 
       const allEnts = this.entities.all();
-      this.entityRenderer.sync(allEnts, now / 1000, (e) => {
-        if (isHostileMobKind(e.kind) || isPassiveMobKind(e.kind)) {
-          return createMobMesh(e.kind);
-        }
-        return null;
-      });
+      this.entityRenderer.sync(
+        allEnts,
+        now / 1000,
+        (e) => {
+          if (isHostileMobKind(e.kind) || isPassiveMobKind(e.kind)) {
+            return createMobMesh(e.kind);
+          }
+          return null;
+        },
+        rawDt
+      );
       for (const e of allEnts) {
         if (e instanceof MobEntity) {
           const obj = this.entityRenderer.getObject(e.id);
@@ -923,6 +957,7 @@ export class Game {
         const topY = this.world.getTopSolidY(sx, sz);
         if (this.player.pos.y < topY + 1) {
           this.player.pos.y = topY + 1.02;
+          this.syncPrevPlayerTransform();
         }
         const tx = sx + 2;
         const tz = sz;
@@ -1483,17 +1518,21 @@ export class Game {
 
   private drainCompletedWorkerResults(jsStart: number): void {
     const budgetMs = 2.6;
+    const curPcx = worldToChunkCoord(this.player.pos.x);
+    const curPcz = worldToChunkCoord(this.player.pos.z);
+    // Keep GPU buffer uploads smooth (at most 2 non-priority chunks/frame) so walking never micro-hitches
+    let bgGpuUploads = 0;
+    const maxBgGpuUploads = 2;
 
     // 1. Always upload priority player-edit meshes immediately (zero latency for digging/placing/torches)
-    let nonPriorityUploaded = 0;
     for (let i = 0; i < this.completedMeshQueue.length; ) {
       const item = this.completedMeshQueue[i];
       if (!item.priority) {
-        if (nonPriorityUploaded >= 2 || performance.now() - jsStart >= budgetMs) {
+        if (bgGpuUploads >= maxBgGpuUploads || performance.now() - jsStart >= budgetMs) {
           i++;
           continue;
         }
-        nonPriorityUploaded++;
+        bgGpuUploads++;
       }
       this.completedMeshQueue.splice(i, 1);
       if (this.world.hasChunk(item.cx, item.cz)) {
@@ -1504,12 +1543,9 @@ export class Game {
     // 2. Time-slice newly generated chunk integration (world insert + cross-chunk light + initial upload)
     const radius = Math.max(2, Math.min(12, Math.round(this.settings.renderDistance)));
     const unloadRadiusSq = (radius + 2) * (radius + 2);
-    const curPcx = worldToChunkCoord(this.player.pos.x);
-    const curPcz = worldToChunkCoord(this.player.pos.z);
 
-    let integrated = 0;
-    while (this.completedGenQueue.length > 0 && integrated < 4) {
-      if (integrated > 0 && performance.now() - jsStart >= budgetMs) break;
+    while (this.completedGenQueue.length > 0 && bgGpuUploads < maxBgGpuUploads) {
+      if (bgGpuUploads > 0 && performance.now() - jsStart >= budgetMs) break;
       const item = this.completedGenQueue.shift()!;
       const k = chunkKey(item.cx, item.cz);
       this.completedGenSet.delete(k);
@@ -1522,7 +1558,7 @@ export class Game {
         this.world.setChunk(restored);
         propagateCrossChunkLight(this.world, item.cx, item.cz);
         this.enqueueRemesh(item.cx, item.cz, true);
-        integrated++;
+        bgGpuUploads++;
         continue;
       }
 
@@ -1539,7 +1575,7 @@ export class Game {
       this.enqueueRemesh(item.cx - 1, item.cz);
       this.enqueueRemesh(item.cx, item.cz + 1);
       this.enqueueRemesh(item.cx, item.cz - 1);
-      integrated++;
+      bgGpuUploads++;
     }
   }
 
@@ -1811,6 +1847,7 @@ export class Game {
         this.player.vel = { x: 0, y: 0, z: 0 };
         this.player.fallPeakY = y;
         this.spawnChunkGrounded = true;
+        this.syncPrevPlayerTransform();
       },
       setSpawnPoint: (x, y, z) => {
         this.player.spawnPoint = { x, y, z };
@@ -1872,6 +1909,7 @@ export class Game {
         for (let i = 0; i < ticks; i++) {
           this.stepFixed(FIXED_DT);
         }
+        this.syncPrevPlayerTransform();
       },
       getState: (): GameStateSnapshot => {
         const biome = this.world.getBiome(this.player.pos.x, this.player.pos.z);

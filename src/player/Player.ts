@@ -72,9 +72,12 @@ export class Player implements PhysicsBody {
     return this.inventory.getTotalArmorDefense();
   }
 
+  getEyeHeight(): number {
+    return this.sneaking ? BALANCE.player.sneakEyeHeight : BALANCE.player.eyeHeight;
+  }
+
   getEyePosition(): Vec3 {
-    const eyeH = this.sneaking ? BALANCE.player.sneakEyeHeight : BALANCE.player.eyeHeight;
-    return { x: this.pos.x, y: this.pos.y + eyeH, z: this.pos.z };
+    return { x: this.pos.x, y: this.pos.y + this.getEyeHeight(), z: this.pos.z };
   }
 
   resetMining(): void {

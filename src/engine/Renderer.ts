@@ -361,8 +361,9 @@ export class Renderer {
   }
 
   setCamera(pos: Vec3, yaw: number, pitch: number, applyWalkBob = false): void {
-    const bobY = applyWalkBob ? Math.abs(Math.sin(this.bobPhase)) * 0.042 * this.bobStrength : 0;
-    const bobRoll = applyWalkBob ? Math.cos(this.bobPhase) * 0.008 * this.bobStrength : 0;
+    const bobWave = 0.5 - 0.5 * Math.cos(this.bobPhase * 2);
+    const bobY = applyWalkBob ? bobWave * 0.036 * this.bobStrength : 0;
+    const bobRoll = applyWalkBob ? Math.cos(this.bobPhase) * 0.006 * this.bobStrength : 0;
     this.camera.position.set(pos.x, pos.y + bobY, pos.z);
     this.camera.rotation.y = yaw;
     this.camera.rotation.x = pitch;
