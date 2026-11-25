@@ -21,6 +21,9 @@ import { attachDebugAPI } from '../debug/DebugAPI';
 import { DroppedItemEntity } from '../entities/DroppedItem';
 import { EntityRenderer } from '../entities/EntityRenderer';
 import { EntitySystem } from '../entities/EntitySystem';
+import { isHostileMobKind, isPassiveMobKind, MobContext, MobEntity } from '../entities/Mob';
+import { animateMobVisual, createMobMesh } from '../entities/MobRenderer';
+import { isDaytimeTick, MobSpawner } from '../entities/MobSpawner';
 import { ArrowEntity } from '../entities/Projectile';
 import { ARMOR_SLOTS, createItemStack, Inventory } from '../player/Inventory';
 import { doesBlockIntersectPlayer, stepPhysics } from '../player/Physics';
@@ -60,7 +63,9 @@ export class Game {
   world: World;
   worker: WorldWorkerClient;
   player: Player;
+  mobSpawner: MobSpawner;
   private terrainSampler: TerrainGenerator;
+  private prevLeftMouse = false;
 
   private mode: GameMode = 'playing';
   private worldId = 'world-default';
@@ -107,6 +112,7 @@ export class Game {
     const seedNum = stringToSeed(initialSeed);
     this.world = new World(seedNum, this.events);
     this.terrainSampler = new TerrainGenerator(seedNum);
+    this.mobSpawner = new MobSpawner(seedNum);
     this.entities = new EntitySystem(this.events);
     this.renderer = new Renderer(canvas, this.settings.fov);
     this.renderer.setHandVisible(true);
@@ -232,6 +238,7 @@ export class Game {
 
     this.world = new World(seed, this.events);
     this.terrainSampler = new TerrainGenerator(seed);
+    this.mobSpawner = new MobSpawner(seed);
     this.worker.resetSeed(seed);
     this.worldTime = 6000;
     this.spawnChunkGrounded = false;
@@ -329,7 +336,19 @@ export class Game {
         this.player.headInWater
       );
 
-      this.entityRenderer.sync(this.entities.all(), now / 1000);
+      const allEnts = this.entities.all();
+      this.entityRenderer.sync(allEnts, now / 1000, (e) => {
+        if (isHostileMobKind(e.kind) || isPassiveMobKind(e.kind)) {
+          return createMobMesh(e.kind);
+        }
+        return null;
+      });
+      for (const e of allEnts) {
+        if (e instanceof MobEntity) {
+          const obj = this.entityRenderer.getObject(e.id);
+          if (obj) animateMobVisual(e, obj);
+        }
+      }
 
       const horizSpeed = Math.hypot(this.player.vel.x, this.player.vel.z);
       this.renderer.updateHandAnimation(rawDt, horizSpeed, this.player.onGround);
@@ -516,7 +535,7 @@ export class Game {
       0,
       {
         world: this.world,
-        onHitEntity: () => false, // Mob damage wired in M6
+        onHitEntity: (arr, pos) => this.handleArrowHit(arr, pos),
       }
     );
     this.entities.add(arrow);
@@ -525,6 +544,152 @@ export class Game {
     this.syncHeldItemVisual();
     this.renderHotbar();
     return true;
+  }
+
+  private getMobContext(): MobContext {
+    return {
+      world: this.world,
+      getPlayerPos: () => this.player.pos,
+      isPlayerAlive: () => !this.player.dead && !this.player.flying,
+      isDaytime: () => isDaytimeTick(this.worldTime),
+      onDamagePlayer: (amount, source, knockbackDir) => {
+        const hit = this.survival.damagePlayer(
+          this.player,
+          this.events,
+          amount,
+          source,
+          { onPlayerDied: (cause) => this.handlePlayerDeath(cause) },
+          false,
+          false
+        );
+        if (hit && !this.player.dead) {
+          const len = Math.hypot(knockbackDir.x, knockbackDir.z) || 1;
+          this.player.vel.x += (knockbackDir.x / len) * 5.2;
+          this.player.vel.z += (knockbackDir.z / len) * 5.2;
+          this.player.vel.y = Math.max(this.player.vel.y, 3.6);
+          this.renderVitals();
+        }
+      },
+      onShootArrow: (origin, vel, damage, shooterId) => {
+        const arrow = new ArrowEntity(
+          this.entities.allocateId(),
+          origin,
+          vel,
+          damage,
+          'mob',
+          shooterId,
+          {
+            world: this.world,
+            onHitEntity: (arr, pos) => this.handleArrowHit(arr, pos),
+          }
+        );
+        this.entities.add(arrow);
+        this.events.emit('sound:play', { name: 'bow', volume: 0.65 });
+      },
+      onMobDied: (mob, drops) => {
+        this.events.emit('entity:killed', { id: mob.id, kind: mob.kind, pos: { ...mob.pos } });
+        for (const stack of drops) {
+          this.spawnDroppedItem(
+            { x: mob.pos.x, y: mob.pos.y + 0.5, z: mob.pos.z },
+            stack
+          );
+        }
+      },
+    };
+  }
+
+  private handleArrowHit(arrow: ArrowEntity, pos: Vec3): boolean {
+    if (arrow.owner === 'player') {
+      for (const e of this.entities.all()) {
+        if (!(e instanceof MobEntity) || !e.alive) continue;
+        const hw = e.width * 0.65;
+        if (
+          Math.abs(pos.x - e.pos.x) <= hw &&
+          Math.abs(pos.z - e.pos.z) <= hw &&
+          pos.y >= e.pos.y &&
+          pos.y <= e.pos.y + e.height + 0.15
+        ) {
+          e.takeDamage(arrow.damage, { x: arrow.vel.x, y: 0, z: arrow.vel.z }, true);
+          this.events.emit('sound:play', { name: 'hit', volume: 0.75 });
+          return true;
+        }
+      }
+    } else if (arrow.owner === 'mob' && !this.player.dead && !this.player.flying) {
+      const hw = this.player.width * 0.65;
+      if (
+        Math.abs(pos.x - this.player.pos.x) <= hw &&
+        Math.abs(pos.z - this.player.pos.z) <= hw &&
+        pos.y >= this.player.pos.y &&
+        pos.y <= this.player.pos.y + this.player.height
+      ) {
+        this.survival.damagePlayer(
+          this.player,
+          this.events,
+          arrow.damage,
+          'bone_archer',
+          { onPlayerDied: (c) => this.handlePlayerDeath(c) },
+          false,
+          false
+        );
+        this.renderVitals();
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Player melee attack along crosshair ray against closest MobEntity within reach.
+   */
+  attackTargetedMob(): boolean {
+    if (this.player.dead || this.player.attackCooldownTicks > 0) return false;
+    this.renderer.triggerHandSwing();
+    this.player.attackCooldownTicks = BALANCE.player.attackCooldownTicks;
+
+    const eye = this.player.getEyePosition();
+    const dir = lookDirection(this.player.yaw, this.player.pitch);
+    const maxDist = 4.5;
+
+    let bestMob: MobEntity | null = null;
+    let bestDist = maxDist;
+
+    for (const e of this.entities.all()) {
+      if (!(e instanceof MobEntity) || !e.alive) continue;
+      // Vector from eye to mob center
+      const cx = e.pos.x - eye.x;
+      const cy = e.pos.y + e.height * 0.5 - eye.y;
+      const cz = e.pos.z - eye.z;
+      const proj = cx * dir.x + cy * dir.y + cz * dir.z;
+      if (proj < 0 || proj > bestDist) continue;
+      // Closest point on ray to mob center
+      const px = eye.x + dir.x * proj;
+      const py = eye.y + dir.y * proj;
+      const pz = eye.z + dir.z * proj;
+      const hitRadius = Math.max(e.width * 0.85, 0.72);
+      const horizErr = Math.hypot(px - e.pos.x, pz - e.pos.z);
+      const vertOk = py >= e.pos.y - 0.35 && py <= e.pos.y + e.height + 0.35;
+      if (horizErr <= hitRadius && vertOk) {
+        bestDist = proj;
+        bestMob = e;
+      }
+    }
+
+    if (!bestMob) return false;
+
+    const held = this.player.inventory.getSelected();
+    const def = held ? ItemRegistry.get(held.itemId) : undefined;
+    const damage = def?.attackDamage ?? BALANCE.player.attackDamageHand;
+
+    const hit = bestMob.takeDamage(damage, { x: dir.x, y: 0, z: dir.z }, true);
+    if (hit) {
+      if (def?.durability) {
+        this.player.inventory.damageSelectedTool(1);
+        this.syncHeldItemVisual();
+        this.renderHotbar();
+      }
+      this.events.emit('sound:play', { name: 'hit', volume: 0.8 });
+    }
+    return hit;
   }
 
   private stepFixed(dt: number): void {
@@ -604,8 +769,17 @@ export class Game {
     this.currentTarget = raycastVoxel(this.world, eye, dir, BALANCE.player.reachDistance);
 
     if (!uiOpen) {
+      // Left-click edge attacks mob in crosshair if in melee range, else mines targeted block
+      const leftDown = this.input.isLeftMouseDown();
+      if (leftDown && !this.prevLeftMouse) {
+        if (this.attackTargetedMob()) {
+          this.player.resetMining();
+        }
+      }
+      this.prevLeftMouse = leftDown;
+
       // Mining progression
-      if (this.input.isLeftMouseDown() && this.currentTarget) {
+      if (leftDown && this.currentTarget) {
         this.stepMining(this.currentTarget, dt);
       } else {
         this.player.resetMining();
@@ -638,6 +812,7 @@ export class Game {
 
     this.containers.tickFurnaces(1);
     this.farming.tick(this.world, 1);
+    this.mobSpawner.tick(this.world, this.player.pos, this.entities, this.worldTime, this.getMobContext(), 1);
     this.gravityBlocks.tick(this.world);
     this.waterFlow.tick(this.world);
     this.entities.update(dt);
@@ -1297,8 +1472,16 @@ export class Game {
         return this.interactOrPlace();
       },
       attack: () => {
-        this.renderer.triggerHandSwing();
-        return false;
+        const hit = this.attackTargetedMob();
+        if (hit) {
+          // Only settle dropped_item entities briefly (never grant mobs extra AI/attack ticks!)
+          for (let t = 0; t < 16; t++) {
+            for (const d of this.entities.byKind('dropped_item')) {
+              d.update(FIXED_DT);
+            }
+          }
+        }
+        return hit;
       },
       craft: (recipeId, useWorkbench = false) => {
         const hasBench = useWorkbench && this.isNearWorkbench();
@@ -1360,10 +1543,33 @@ export class Game {
         };
       },
       advanceTime: (ticks) => {
-        this.worldTime += ticks;
-        if (ticks > 0) {
-          this.containers.tickFurnaces(Math.min(ticks, 4000));
-          this.farming.tick(this.world, ticks);
+        if (ticks <= 0) {
+          this.worldTime += ticks;
+          return;
+        }
+        // Step time in chunks so midnight mob spawning & survival checks run accurately during accelerated time
+        const stepSize = 200;
+        let remaining = ticks;
+        while (remaining > 0) {
+          const chunkTicks = Math.min(remaining, stepSize);
+          this.worldTime += chunkTicks;
+          this.containers.tickFurnaces(Math.min(chunkTicks, 400));
+          this.farming.tick(this.world, chunkTicks);
+          if (!this.player.flying && !this.player.dead) {
+            this.mobSpawner.tick(
+              this.world,
+              this.player.pos,
+              this.entities,
+              this.worldTime,
+              this.getMobContext(),
+              chunkTicks
+            );
+            // Step living mobs briefly so threats outside/inside interact realistically
+            for (let m = 0; m < 10; m++) {
+              this.entities.update(FIXED_DT);
+            }
+          }
+          remaining -= chunkTicks;
         }
       },
       stepSimulation: (ticks) => {

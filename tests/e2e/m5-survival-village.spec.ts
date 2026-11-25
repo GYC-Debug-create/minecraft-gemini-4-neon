@@ -181,7 +181,12 @@ test('M5 survival & villages: fall/drown/starve death+respawn, village screensho
     g.respawn();
     const afterDrownRespawn = g.getState().player;
 
-    // 3c) STARVE DEATH -> RESPAWN (sprint & jump continuously until hunger hits 0 and starvation kills player)
+    // 3c) STARVE DEATH -> RESPAWN (reset to early morning so night mobs don't interrupt starvation test)
+    const todNow = g.getState().worldTime % 24000;
+    const toMorning = (400 - todNow + 24000) % 24000;
+    g.setFlying(true);
+    g.advanceTime(toMorning);
+    g.setFlying(false);
     g.teleport(safeSpawn.x, safeSpawn.y, safeSpawn.z);
     g.setLook(0, 0);
     g.setKey('KeyW', true);
@@ -189,7 +194,12 @@ test('M5 survival & villages: fall/drown/starve death+respawn, village screensho
     g.setKey('Space', true);
     let safety = 0;
     while (!g.getState().player.dead && safety++ < 220) {
-      // Bounce back inside loaded road area so we never walk off cliffs or into water
+      // Keep daylight during long starvation simulation so nighttime mobs cannot kill player before hunger hits 0
+      if (g.getState().worldTime % 24000 > 10500) {
+        g.setFlying(true);
+        g.advanceTime(24400 - (g.getState().worldTime % 24000));
+        g.setFlying(false);
+      }
       const p = g.getState().player.pos;
       if (Math.hypot(p.x - safeSpawn.x, p.z - safeSpawn.z) > 10) {
         g.teleport(safeSpawn.x, safeSpawn.y + 1, safeSpawn.z);

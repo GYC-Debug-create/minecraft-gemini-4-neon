@@ -9,8 +9,8 @@
 - **Repository**: Git on branch `main`
 
 ## Current Milestone
-- **Active**: **M6 — Mobs, A* Pathfinding, Combat, & Spawning**
-- **Status**: Starting M6 (M0–M5 completed, verified, and committed)
+- **Active**: **M7 — Menus, Settings, HUD, F3 Debug Overlay, & IndexedDB Saves**
+- **Status**: Starting M7 (M0–M6 completed, verified, and committed)
 
 ## Milestone Status (M0 – M8)
 
@@ -21,37 +21,32 @@
 | **M2 Player & Interaction** | **DONE** | `npm run build`, `npm test` (16/16), `npm run e2e` (3/3), `docs/screenshots/M2-interaction.png`, commit `f728065` |
 | **M3 Lighting & Sky** | **DONE** | `npm run build`, `npm test` (20/20), `npm run e2e` (4/4), `docs/screenshots/M3-{noon,dusk,midnight,cave-torch}.png`, commit `394b2b3` |
 | **M4 Item System** | **DONE** | `npm run build`, `npm test` (24/24), `npm run e2e` (5/5), `docs/screenshots/M4-crafting.png`, commit `0895f33` |
-| **M5 Survival & Villages** | **DONE** | `npm run build` (2.04s), `npm test` (27/27 incl. `village_survival.test.ts`), `npm run e2e` (6/6 incl. `m5-survival-village.spec.ts`: fall/drown/starve death+respawn, accelerated crop growth & harvest, village chest loot), `docs/screenshots/M5-village.png` |
-| **M6 Mobs** | **In Progress** | — |
-| **M7 UI & Saves** | Pending | — |
+| **M5 Survival & Villages** | **DONE** | `npm run build`, `npm test` (27/27), `npm run e2e` (6/6), `docs/screenshots/M5-village.png`, commit `85be1ac` |
+| **M6 Mobs** | **DONE** | `npm run build` (2.03s), `npm test` (31/31 incl. `mobs.test.ts`: spawn light >= 7 blocked, A* wall avoidance & maxNodes cap, i-frames/knockback/sunburn/drops), `npm run e2e` (7/7 incl. `m6-mobs.spec.ts`: midnight open-field spawn, Oak Blade combat kill+drop, player-built sealed 5×5 torch-lit hut survives full night w/ 0 interior spawns), `docs/screenshots/M6-mobs.png` |
+| **M7 UI & Saves** | **In Progress** | — |
 | **M8 Polish** | Pending | — |
 
 ## Completed Subtasks
-- **[M0–M4]** Architecture, worker terrain/mesher/atlas, physics/raycast, lighting/sky/water, inventory/crafting/containers (`4b6779b`..`0895f33`).
-- **[M5.1]** Implemented `src/systems/SurvivalSystem.ts` (fall damage, hunger/saturation/regen/starvation, drowning, armor reduction, food eating, bed spawn/sleep, death drops & respawn).
-- **[M5.2]** Implemented `src/systems/FarmingSystem.ts` (hoe tilling, farmland hydration near water, crop growth stages 0–3, bonemeal).
-- **[M5.3]** Implemented deterministic cross-chunk `src/world/VillageGenerator.ts` (Plains/Desert/Snow palettes, central well, terrain-adapted road, 4–8 terrain-seated houses with doors/windows/torches/beds/workbenches/furnaces/chests, 1–2 irrigated farms, lazy first-open chest loot).
-- **[M5.4]** Verified M5 via `tests/unit/village_survival.test.ts` (3/3) and `tests/e2e/m5-survival-village.spec.ts` (pass, visually inspected `docs/screenshots/M5-village.png`).
+- **[M0–M5]** Core architecture, worker terrain/mesher/atlas, physics/raycast, lighting/sky/water, inventory/crafting/containers, survival/farming/villages (`4b6779b`..`85be1ac`).
+- **[M6.1]** Implemented `src/entities/Pathfinding.ts` (bounded voxel grid A* with obstacle avoidance, 1-block step-up, safe drops, spider wall-climb, strict `maxNodes` cap).
+- **[M6.2]** Implemented `src/entities/Mob.ts` (3 passive: Meadow Boar, Woolhorn Ram, Crested Fowl; 3 hostile: Ash Husk, Hollow Archer with parabolic arrows, Gloom Spider wall-climbing & day-neutral/night-hostile; sunlight burning, knockback, i-frames, drops), `src/entities/MobSpawner.ts` (strict light threshold < 7 rule, despawn > 64), and `src/entities/MobRenderer.ts` (original procedural 3D articulated voxel models).
+- **[M6.3]** Integrated M6 into `src/engine/Game.ts`, fixed `attack()` tick isolation so mobs don't get extra AI ticks during player attack drop-settle, and verified `tests/unit/mobs.test.ts` (4/4) + `tests/e2e/m6-mobs.spec.ts` (pass, `docs/screenshots/M6-mobs.png`).
 
 ## Blockers
 - None.
 
-## Next Step (M6 — Mobs, A* Pathfinding, Combat, & Spawning)
-1. Implement `src/entities/Pathfinding.ts`:
-   - Pure bounded 3D voxel grid A* pathfinder (`findPath(world, start, goal, opts)`), respecting `maxNodes` (`BALANCE.mobs.pathfindMaxNodes = 160`), 1-block step-up, safe drop-down (<= 3 blocks), wall-climb support for `Gloom Spider`, and obstacle avoidance!
-2. Implement `src/entities/Mob.ts` and `src/entities/MobSpawner.ts`:
-   - 3 original passive mobs: **Meadow Boar** (`boar`), **Woolhorn Ram** (`ram`), **Crested Fowl** (`fowl`) — wander, flee when hit, drop raw meat / leather / wool / feathers.
-   - 3 original hostile mobs (100% original color palette & silhouettes):
-     - **Ash Husk** (`husk`): melee chaser using A*, burns in direct daytime sky light (`skyLight >= 13 && daytime`), drops Rotten Flesh.
-     - **Hollow Archer** (`bone_archer`): standoff ranged combat (~10 blocks), fires visible parabolic `ArrowEntity` projectiles at player, burns in direct daytime sky light, drops Bone & Arrows.
-     - **Gloom Spider** (`gloom_spider`): climbs vertical walls toward player, neutral during bright daylight unless provoked, hostile at night or in dark caves, drops Silk Thread.
-   - Combat mechanics: player melee attack (`Left Click` / `window.__game.attack()`), sword/tool attack damage, bow arrow hits on mobs AND skeleton arrows hitting player (with armor mitigation!), knockback impulse, hit invincibility frames (`i-frames`), red damage flash on mob mesh!
-   - Spawning & despawning (`MobSpawner.ts`):
-     - Pure testable `canHostileSpawnAt(world, x, y, z, isDaytime)` rule: **NEVER spawns if effective light >= threshold (`hostileMaxLight = 7`)** (uses `max(blockLight, effectiveSkyLight)` where `effectiveSkyLight` is `skyLight` during daytime and `0` at night so torches inside a 5×5 hut ALWAYS block hostile spawns even at midnight!).
-     - Also verifies solid floor + 2 air clearance + minimum safe distance (`minSpawnDist`) from player (or inside closed roofed rooms, torches keep every floor block >= 8 light -> 0 interior spawns!).
-     - Passive mobs spawn in daylight on Grass/SnowGrass; hostile mobs spawn in dark caves or outdoors at night; far mobs beyond `despawnDist (64)` despawn cleanly.
-3. Implement `src/entities/MobRenderer.ts`:
-   - Procedural articulated original voxel Three.js models for all 6 mobs (walk limb animation, hurt flash tint, burning flame cubes when sun-burning!).
-4. Integrate Mobs, MobSpawner, MobRenderer, melee & arrow combat into `src/engine/Game.ts`.
-5. Add `tests/unit/mobs.test.ts` (light >= threshold NEVER allows hostile spawn; A* navigates around solid U-wall obstacle; A* respects `maxNodes` search budget cap; combat knockback/i-frames/drops) and `tests/e2e/m6-mobs.spec.ts` (open field midnight 2 min -> hostile mobs appear nearby; enclosed 5×5 lit hut with torch survives full night with player alive & 0 mobs inside hut; kill mob & verify drops collected!).
-6. Run `npm run build`, `npm test`, `npm run e2e`, capture & inspect `docs/screenshots/M6-mobs.png`, update `PROGRESS.md`, commit M6.
+## Next Step (M7 — UI, Menus, Settings, F3, & IndexedDB Saves)
+1. Implement `src/storage/schema.ts` & `src/storage/SaveManager.ts`:
+   - Versioned IndexedDB persistence (`stoneroot-db`, `CURRENT_SAVE_VERSION = 2`):
+     - Stores: `worlds` (world metadata, seed, worldTime, player state, inventory, armor, spawnPoint, containers, schema version), `chunks` (keyed by `${worldId}:${cx},${cz}`, storing ONLY modified chunks with `blocks`, `meta`, `biomes`), `settings` (renderDistance, fov, mouseSensitivity, volume).
+     - Pure migration pipeline (`migrateWorldSave(raw)`) supporting v1 -> v2 cleanly; on unmigratable/corrupt future/unknown version returns `{ ok: false, reason }` so UI warns clearly and starts fresh without crashing!
+   - Auto-save every 30s + save on pause / quit / `beforeunload` / `window.__game.saveNow()`.
+   - When loading chunks from Worker on a continued world, overlay saved modified chunks from IndexedDB BEFORE lighting & meshing!
+2. Implement polished original UI modules:
+   - `src/ui/Menus.ts`: Original **Stoneroot** Main Menu (SVG pixel crest logo, New World with optional Seed input, Continue World button showing saved seed/day if a save exists, Settings panel with sliders for Render Distance 4–12, FOV 60–105, Mouse Sensitivity 0.2–2.5, Master Volume 0–100%), Pause Menu (`Esc`: Resume, Save & Quit to Menu, Settings), Save migration notice banner.
+   - `src/ui/HUD.ts`: Polished visual HUD (Hearts row, Hunger row, Oxygen bubbles when submerged, Armor shield icons, Hotbar with durability bars & item name toast, Hurt vignette, Underwater blue tint).
+   - `src/ui/DebugOverlay.ts`: Toggleable `F3` Debug Panel (FPS, JS frame ms, XYZ coords, Chunk coord, Facing N/S/E/W + yaw/pitch, Biome name, Sky/Block Light, Loaded Chunks, Draw Calls & Triangles).
+3. **Zero-Regression Compatibility Note for M0–M6 E2E**:
+   - Normal visitors at `/` see the Main Menu (`mode === 'menu'`), while URL `/?seed=...` (used by M1–M6 E2E tests!) auto-starts that seed straight into `'playing'`, AND `m0-smoke.spec.ts` visiting `/` sees `ready() === true` (or starts/renders live 3D background camera on main menu!). Even better: render the live animated 3D world canvas behind the translucent Main Menu (or start menu with live WebGL world preview!) so `/` ALREADY renders crisp WebGL terrain behind the title screen AND `m0-smoke` stays 100% green!!
+4. Add `tests/unit/storage.test.ts` (using `fake-indexeddb`: save/load modified chunks + player + inventory + containers + settings, v1 -> v2 schema migration, corrupt/unknown version safe fallback without crash) and `tests/e2e/m7-ui-saves.spec.ts` (modify terrain + place item in inventory + place item in chest -> `saveNow()` -> `page.reload()` -> click/call Continue World -> assert terrain, inventory, AND chest contents match 100%; change settings -> reload -> verify settings persist; toggle F3 & verify debug panel visible; capture `docs/screenshots/M7-ui-save.png`).
+5. Run `npm run build`, `npm test`, `npm run e2e`, inspect screenshot, update `PROGRESS.md`, commit M7.
