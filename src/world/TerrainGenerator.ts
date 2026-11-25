@@ -4,6 +4,7 @@ import { hash2D, hash3D, SeededRNG } from '../core/rng';
 import { BiomeId } from '../core/types';
 import { BlockId, BlockRegistry } from '../registry/blocks';
 import { Chunk, chunkIndex, worldToChunkCoord, worldToLocalCoord } from './Chunk';
+import { stampVillagesIntoChunk } from './VillageGenerator';
 
 export interface ClimateSample {
   continental: number;
@@ -402,6 +403,14 @@ export class TerrainGenerator {
 
     // 5. Surface flora (TallGrass, Wildflowers, DryScrub)
     this.stampFlora(blocks, biomes, baseX, baseZ);
+
+    // 5b. Deterministic cross-chunk biome villages (houses, road, farms, well, chests)
+    stampVillagesIntoChunk(
+      chunk,
+      this.seed,
+      (x, z) => this.sampleBiome(x, z),
+      (x, z) => this.sampleHeight(x, z)
+    );
 
     // 6. Initial vertical column sky-light + emitting block light pass
     this.computeInitialLight(chunk);

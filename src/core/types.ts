@@ -195,6 +195,16 @@ export interface IGameDebugAPI {
   getOpenContainer(): ContainerSnapshot | null;
   teleport(x: number, y: number, z: number): void;
   setSpawnPoint(x: number, y: number, z: number): void;
+  respawn(): void;
+  findNearestVillage(): {
+    centerX: number;
+    centerZ: number;
+    baseY: number;
+    biome: BiomeId;
+    houseCount: number;
+    farmCount: number;
+    chests: Array<{ x: number; y: number; z: number }>;
+  } | null;
   advanceTime(ticks: number): void;
   stepSimulation(ticks: number): void;
   getState(): GameStateSnapshot;

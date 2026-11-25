@@ -30,12 +30,15 @@ import { BlockId, BlockRegistry } from '../registry/blocks';
 import { ItemId, ItemRegistry } from '../registry/items';
 import { ContainerManager } from '../systems/ContainerManager';
 import { craftRecipeFromInventory } from '../systems/CraftingSystem';
+import { FarmingSystem } from '../systems/FarmingSystem';
+import { SurvivalSystem } from '../systems/SurvivalSystem';
 import { InventoryUI } from '../ui/InventoryUI';
 import { chunkKey, worldToChunkCoord } from '../world/Chunk';
 import { GravityBlockSystem } from '../world/GravityBlocks';
 import { propagateCrossChunkLight, updateLightingAt } from '../world/Lighting';
 import { extractNeighborSlices } from '../world/Mesher';
-import { findSafeSpawn } from '../world/TerrainGenerator';
+import { findSafeSpawn, TerrainGenerator } from '../world/TerrainGenerator';
+import { findNearestVillage, getVillageChestsInChunk } from '../world/VillageGenerator';
 import { WaterFlowSystem } from '../world/WaterFlow';
 import { World } from '../world/World';
 import { InputManager } from './InputManager';
@@ -51,10 +54,13 @@ export class Game {
   readonly gravityBlocks = new GravityBlockSystem();
   readonly waterFlow = new WaterFlowSystem();
   readonly containers = new ContainerManager();
+  readonly survival = new SurvivalSystem();
+  readonly farming = new FarmingSystem();
   readonly inventoryUI: InventoryUI;
   world: World;
   worker: WorldWorkerClient;
   player: Player;
+  private terrainSampler: TerrainGenerator;
 
   private mode: GameMode = 'playing';
   private worldId = 'world-default';
@@ -91,11 +97,16 @@ export class Game {
   // HUD elements
   private readonly hudInfoEl: HTMLDivElement;
   private readonly crosshairEl: HTMLDivElement;
+  private readonly vitalsEl: HTMLDivElement;
   private readonly hotbarEl: HTMLDivElement;
+  private readonly hurtOverlayEl: HTMLDivElement;
+  private readonly deathOverlayEl: HTMLDivElement;
+  private readonly deathCauseEl: HTMLDivElement;
 
   constructor(canvas: HTMLCanvasElement, uiRoot: HTMLElement, initialSeed: number | string = 1337) {
     const seedNum = stringToSeed(initialSeed);
     this.world = new World(seedNum, this.events);
+    this.terrainSampler = new TerrainGenerator(seedNum);
     this.entities = new EntitySystem(this.events);
     this.renderer = new Renderer(canvas, this.settings.fov);
     this.renderer.setHandVisible(true);
@@ -105,6 +116,12 @@ export class Game {
 
     const spawn = findSafeSpawn(seedNum);
     this.player = new Player({ x: spawn.x + 0.5, y: spawn.y + 0.05, z: spawn.z + 0.5 });
+
+    // Hurt red flash overlay
+    this.hurtOverlayEl = document.createElement('div');
+    this.hurtOverlayEl.style.cssText =
+      'position:absolute;inset:0;pointer-events:none;background:radial-gradient(circle,rgba(200,28,28,0) 40%,rgba(200,28,28,0.65) 100%);opacity:0;transition:opacity 0.08s;z-index:12;';
+    uiRoot.appendChild(this.hurtOverlayEl);
 
     // Info HUD
     this.hudInfoEl = document.createElement('div');
@@ -123,12 +140,39 @@ export class Game {
     this.crosshairEl.textContent = '+';
     uiRoot.appendChild(this.crosshairEl);
 
+    // Vitals bar (Health, Hunger, Oxygen, Armor)
+    this.vitalsEl = document.createElement('div');
+    this.vitalsEl.style.cssText =
+      'position:absolute;bottom:68px;left:50%;transform:translateX(-50%);display:flex;gap:14px;' +
+      'align-items:center;padding:4px 10px;background:rgba(18,22,28,0.72);border:1px solid rgba(240,235,225,0.2);' +
+      'border-radius:6px;font-size:12px;font-family:ui-monospace,Consolas,monospace;color:#f0ebe1;pointer-events:none;';
+    uiRoot.appendChild(this.vitalsEl);
+
     // Hotbar
     this.hotbarEl = document.createElement('div');
     this.hotbarEl.style.cssText =
       'position:absolute;bottom:14px;left:50%;transform:translateX(-50%);display:flex;gap:4px;' +
       'padding:4px;background:rgba(18,22,28,0.78);border:1px solid rgba(240,235,225,0.25);border-radius:6px;';
     uiRoot.appendChild(this.hotbarEl);
+
+    // Death screen overlay
+    this.deathOverlayEl = document.createElement('div');
+    this.deathOverlayEl.style.cssText =
+      'position:absolute;inset:0;display:none;flex-direction:column;align-items:center;justify-content:center;' +
+      'gap:14px;background:rgba(68,14,14,0.76);pointer-events:auto;z-index:35;color:#f6ece8;';
+    const deathTitle = document.createElement('div');
+    deathTitle.textContent = 'You Perished';
+    deathTitle.style.cssText = 'font-size:34px;font-weight:800;letter-spacing:1px;';
+    this.deathCauseEl = document.createElement('div');
+    this.deathCauseEl.style.cssText = 'font-size:14px;color:#e4c4bc;';
+    const respawnBtn = document.createElement('button');
+    respawnBtn.textContent = 'Respawn at Camp';
+    respawnBtn.style.cssText =
+      'padding:10px 22px;background:#d69e4a;color:#14181e;border:none;border-radius:6px;' +
+      'font-size:15px;font-weight:700;cursor:pointer;';
+    respawnBtn.onclick = () => this.respawnPlayer();
+    this.deathOverlayEl.append(deathTitle, this.deathCauseEl, respawnBtn);
+    uiRoot.appendChild(this.deathOverlayEl);
 
     // Inventory / Workbench / Furnace / Chest UI
     this.inventoryUI = new InventoryUI(
@@ -187,15 +231,47 @@ export class Game {
     this.remeshQueuedSet.clear();
 
     this.world = new World(seed, this.events);
+    this.terrainSampler = new TerrainGenerator(seed);
     this.worker.resetSeed(seed);
     this.worldTime = 6000;
     this.spawnChunkGrounded = false;
+    this.survival.resetTimers();
+    this.deathOverlayEl.style.display = 'none';
 
     const spawn = findSafeSpawn(seed);
     this.player = new Player({ x: spawn.x + 0.5, y: spawn.y + 0.05, z: spawn.z + 0.5 });
     this.mode = 'playing';
     this.syncHeldItemVisual();
     this.renderHotbar();
+    this.renderVitals();
+  }
+
+  private handlePlayerDeath(cause: string): void {
+    this.mode = 'dead';
+    this.inventoryUI.close();
+    this.input.exitPointerLock();
+    const dropped = this.player.inventory.extractAllItems();
+    for (const stack of dropped) {
+      this.spawnDroppedItem(
+        { x: this.player.pos.x, y: this.player.pos.y + 0.6, z: this.player.pos.z },
+        stack
+      );
+    }
+    this.deathCauseEl.textContent = `Cause: ${cause}`;
+    this.deathOverlayEl.style.display = 'flex';
+    this.syncHeldItemVisual();
+    this.renderHotbar();
+    this.renderVitals();
+  }
+
+  respawnPlayer(): void {
+    if (!this.player.dead && this.mode !== 'dead') return;
+    this.survival.respawnPlayer(this.player, this.events);
+    this.deathOverlayEl.style.display = 'none';
+    this.mode = 'playing';
+    this.syncHeldItemVisual();
+    this.renderHotbar();
+    this.renderVitals();
   }
 
   private enqueueRemesh(cx: number, cz: number, priority = false): void {
@@ -257,6 +333,9 @@ export class Game {
 
       const horizSpeed = Math.hypot(this.player.vel.x, this.player.vel.z);
       this.renderer.updateHandAnimation(rawDt, horizSpeed, this.player.onGround);
+
+      // Update hurt red vignette overlay
+      this.hurtOverlayEl.style.opacity = this.player.hurtFlashSec > 0 ? String(Math.min(1, this.player.hurtFlashSec * 2.8)) : '0';
 
       // Update selection box & break overlay
       if (this.currentTarget && !this.inventoryUI.isOpen()) {
@@ -483,11 +562,20 @@ export class Game {
 
     const uiOpen = this.inventoryUI.isOpen();
 
+    let stepRes = {
+      landed: false,
+      impactSpeed: 0,
+      horizontalDistance: 0,
+      collidedX: false,
+      collidedZ: false,
+    };
+    const jumped = !uiOpen && this.input.isDown('Space') && this.player.onGround && !this.player.inWater;
+
     if (chunkLoaded || this.player.flying) {
       const forward = uiOpen ? 0 : (this.input.isDown('KeyW') ? 1 : 0) - (this.input.isDown('KeyS') ? 1 : 0);
       const strafe = uiOpen ? 0 : (this.input.isDown('KeyD') ? 1 : 0) - (this.input.isDown('KeyA') ? 1 : 0);
 
-      stepPhysics(
+      stepRes = stepPhysics(
         this.world,
         this.player,
         {
@@ -500,6 +588,14 @@ export class Game {
         dt,
         this.player.hunger >= BALANCE.survival.hungerSprintMinHunger
       );
+    }
+
+    this.survival.tick(this.player, stepRes, jumped, dt, this.events, {
+      onPlayerDied: (cause) => this.handlePlayerDeath(cause),
+    });
+    if (this.player.dead) {
+      this.input.clearPressedFrame();
+      return;
     }
 
     // Raycast targeted block
@@ -541,6 +637,7 @@ export class Game {
     }
 
     this.containers.tickFurnaces(1);
+    this.farming.tick(this.world, 1);
     this.gravityBlocks.tick(this.world);
     this.waterFlow.tick(this.world);
     this.entities.update(dt);
@@ -621,6 +718,7 @@ export class Game {
       this.world.setBlock(brokenPos.x, brokenPos.y, brokenPos.z, BlockId.Air);
       this.renderer.triggerHandSwing();
       this.player.resetMining();
+      this.survival.addMiningExhaustion();
 
       // Wear tool durability when mining non-instant blocks
       if (def.hardness > 0.05) {
@@ -719,6 +817,13 @@ export class Game {
         return this.openContainerAt(hit.pos.x, hit.pos.y, hit.pos.z);
       }
 
+      // Interact with Camp Bed: set spawn point & skip night to dawn
+      if (hit.blockId === BlockId.Bed) {
+        const res = this.survival.useBed(this.player, hit.pos.x, hit.pos.y, hit.pos.z, this.worldTime);
+        this.worldTime = res.newWorldTime;
+        return true;
+      }
+
       // Toggle wooden doors
       if (hit.blockId === BlockId.WoodDoorBottom || hit.blockId === BlockId.WoodDoorTop) {
         const baseY = hit.blockId === BlockId.WoodDoorTop ? hit.pos.y - 1 : hit.pos.y;
@@ -728,6 +833,42 @@ export class Game {
         if (this.world.getBlock(hit.pos.x, baseY + 1, hit.pos.z) === BlockId.WoodDoorTop) {
           this.world.setMeta(hit.pos.x, baseY + 1, hit.pos.z, nextMeta);
         }
+        return true;
+      }
+    }
+
+    const held = this.player.inventory.getSelected();
+    const heldDef = held ? ItemRegistry.get(held.itemId) : undefined;
+
+    // Hoe tilling dirt/grass into farmland
+    if (hit && heldDef?.toolType === 'hoe') {
+      if (this.farming.tillSoil(this.world, hit.pos.x, hit.pos.y, hit.pos.z)) {
+        this.player.inventory.damageSelectedTool(1);
+        this.renderer.triggerHandSwing();
+        this.syncHeldItemVisual();
+        this.renderHotbar();
+        return true;
+      }
+    }
+
+    // Bonemeal accelerates crop growth
+    if (hit && heldDef?.isBonemeal) {
+      if (this.farming.applyBonemeal(this.world, hit.pos.x, hit.pos.y, hit.pos.z)) {
+        this.player.inventory.consumeSelected(1);
+        this.renderer.triggerHandSwing();
+        this.syncHeldItemVisual();
+        this.renderHotbar();
+        return true;
+      }
+    }
+
+    // Eat food when hungry
+    if (heldDef?.foodRestore && this.player.hunger < this.player.maxHunger) {
+      if (this.survival.eatSelectedFood(this.player, this.events)) {
+        this.renderer.triggerHandSwing();
+        this.syncHeldItemVisual();
+        this.renderHotbar();
+        this.renderVitals();
         return true;
       }
     }
@@ -972,6 +1113,17 @@ export class Game {
           if ((cand.cx - curPcx) ** 2 + (cand.cz - curPcz) ** 2 > unloadRadiusSq) return;
 
           this.world.setChunk(chunk);
+          // Register any deterministic village chests inside this chunk for lazy loot rolling on first open
+          const villageChests = getVillageChestsInChunk(
+            cand.cx,
+            cand.cz,
+            this.world.seed,
+            (x, z) => this.terrainSampler.sampleBiome(x, z),
+            (x, z) => this.terrainSampler.sampleHeight(x, z)
+          );
+          for (const vc of villageChests) {
+            this.containers.registerVillageChest(vc.x, vc.y, vc.z, vc.lootSeed);
+          }
           propagateCrossChunkLight(this.world, cand.cx, cand.cz);
           this.renderer.setChunkMesh(cand.cx, cand.cz, mesh);
 
@@ -1028,7 +1180,29 @@ export class Game {
     }
   }
 
+  private renderVitals(): void {
+    const hp = Math.ceil(this.player.health);
+    const maxHp = this.player.maxHealth;
+    const hung = Math.ceil(this.player.hunger);
+    const maxHung = this.player.maxHunger;
+    const armor = this.player.armorDefense;
+    const o2 = Math.ceil(this.player.oxygen);
+
+    const parts = [
+      `<span style="color:#e25555">♥ ${hp}/${maxHp}</span>`,
+      `<span style="color:#df9f44">🍖 ${hung}/${maxHung}</span>`,
+    ];
+    if (armor > 0) {
+      parts.push(`<span style="color:#9eb7d1">🛡 ${armor}</span>`);
+    }
+    if (this.player.headInWater || o2 < this.player.maxOxygen) {
+      parts.push(`<span style="color:#58b8e6">🫧 ${o2}/${this.player.maxOxygen}</span>`);
+    }
+    this.vitalsEl.innerHTML = parts.join('');
+  }
+
   private updateHudText(): void {
+    this.renderVitals();
     const biome = this.world.getBiome(this.player.pos.x, this.player.pos.z);
     const stats = this.renderer.getRenderStats();
     const targetText = this.currentTarget
@@ -1156,15 +1330,41 @@ export class Game {
       teleport: (x, y, z) => {
         this.player.pos = { x, y, z };
         this.player.vel = { x: 0, y: 0, z: 0 };
+        this.player.fallPeakY = y;
         this.spawnChunkGrounded = true;
       },
       setSpawnPoint: (x, y, z) => {
         this.player.spawnPoint = { x, y, z };
       },
+      respawn: () => {
+        this.respawnPlayer();
+      },
+      findNearestVillage: () => {
+        const v = findNearestVillage(
+          this.world.seed,
+          (x, z) => this.terrainSampler.sampleBiome(x, z),
+          (x, z) => this.terrainSampler.sampleHeight(x, z),
+          this.player.pos.x,
+          this.player.pos.z,
+          8
+        );
+        if (!v) return null;
+        return {
+          centerX: v.centerX,
+          centerZ: v.centerZ,
+          baseY: v.baseY,
+          biome: v.biome,
+          houseCount: v.houses.length,
+          farmCount: v.farms.length,
+          chests: v.chests.map((c) => ({ x: c.x, y: c.y, z: c.z })),
+        };
+      },
       advanceTime: (ticks) => {
         this.worldTime += ticks;
-        // Also advance furnaces proportionally during accelerated time
-        if (ticks > 0) this.containers.tickFurnaces(Math.min(ticks, 4000));
+        if (ticks > 0) {
+          this.containers.tickFurnaces(Math.min(ticks, 4000));
+          this.farming.tick(this.world, ticks);
+        }
       },
       stepSimulation: (ticks) => {
         for (let i = 0; i < ticks; i++) {
