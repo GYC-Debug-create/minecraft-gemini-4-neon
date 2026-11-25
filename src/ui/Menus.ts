@@ -1,5 +1,6 @@
 import { DAY_LENGTH_TICKS } from '../config/constants';
-import { GameSettings } from '../core/types';
+import { getDeathCauseDisplayName, getLanguage, uiText } from '../core/i18n';
+import { GameSettings, Language } from '../core/types';
 
 export interface WorldSummary {
   worldId: string;
@@ -24,14 +25,33 @@ export class Menus {
   private readonly pauseMenuEl: HTMLDivElement;
   private readonly settingsModalEl: HTMLDivElement;
   private readonly deathOverlayEl: HTMLDivElement;
-  private readonly deathCauseEl: HTMLDivElement;
+
+  private readonly mainTitleEl: HTMLDivElement;
+  private readonly mainSubtitleEl: HTMLDivElement;
+  private readonly mainLangBtn: HTMLButtonElement;
   private readonly seedInput: HTMLInputElement;
   private readonly continueBtn: HTMLButtonElement;
   private readonly continueMetaEl: HTMLDivElement;
+  private readonly newWorldBtn: HTMLButtonElement;
+  private readonly mainSettingsBtn: HTMLButtonElement;
   private readonly mainWarningEl: HTMLDivElement;
+
+  private readonly pauseTitleEl: HTMLDivElement;
+  private readonly pauseResumeBtn: HTMLButtonElement;
+  private readonly pauseSaveBtn: HTMLButtonElement;
+  private readonly pauseSettingsBtn: HTMLButtonElement;
+  private readonly pauseLangBtn: HTMLButtonElement;
+  private readonly pauseQuitBtn: HTMLButtonElement;
+
+  private readonly deathTitleEl: HTMLDivElement;
+  private readonly deathCauseEl: HTMLDivElement;
+  private readonly deathRespawnBtn: HTMLButtonElement;
+  private readonly deathMenuBtn: HTMLButtonElement;
 
   private readonly callbacks: MenuCallbacks;
   private currentSettings: GameSettings;
+  private latestSummary: WorldSummary | null = null;
+  private lastDeathCause = '';
   private settingsReturnTarget: 'main' | 'pause' = 'main';
 
   constructor(uiRoot: HTMLElement, initialSettings: GameSettings, callbacks: MenuCallbacks) {
@@ -44,6 +64,14 @@ export class Menus {
     this.mainMenuEl.style.cssText =
       'position:absolute;inset:0;display:none;flex-direction:column;align-items:center;justify-content:center;' +
       'background:linear-gradient(180deg,rgba(14,18,26,0.58) 0%,rgba(14,18,26,0.84) 100%);pointer-events:auto;z-index:30;';
+
+    // Quick Language Toggle in top-right corner of Main Menu
+    this.mainLangBtn = this.makeButton('', 'rgba(34,42,54,0.88)', '#f0ebe1');
+    this.mainLangBtn.id = 'btn-lang-toggle';
+    this.mainLangBtn.style.cssText +=
+      'position:absolute;top:16px;right:18px;padding:7px 14px;font-size:13px;border-color:rgba(232,207,142,0.45);';
+    this.mainLangBtn.onclick = () => this.toggleLanguage();
+    this.mainMenuEl.appendChild(this.mainLangBtn);
 
     const card = document.createElement('div');
     card.style.cssText =
@@ -64,16 +92,20 @@ export class Menus {
         <rect x="6" y="9" width="4" height="4" fill="#45c8b8"/>
         <rect x="7" y="10" width="2" height="2" fill="#a2f5ea"/>
       </svg>
-      <div style="font-size:30px;font-weight:900;letter-spacing:3px;color:#eed497;text-shadow:0 3px 0 #1b2028">STONEROOT</div>
-      <div style="font-size:12px;letter-spacing:1.4px;color:#9da8b8;text-transform:uppercase">Voxel Survival Sandbox</div>
     `;
+    this.mainTitleEl = document.createElement('div');
+    this.mainTitleEl.style.cssText =
+      'font-size:28px;font-weight:900;letter-spacing:2.4px;color:#eed497;text-shadow:0 3px 0 #1b2028;text-align:center;';
+    this.mainSubtitleEl = document.createElement('div');
+    this.mainSubtitleEl.style.cssText = 'font-size:12px;letter-spacing:1.2px;color:#9da8b8;text-align:center;';
+    logoWrap.append(this.mainTitleEl, this.mainSubtitleEl);
 
     this.mainWarningEl = document.createElement('div');
     this.mainWarningEl.style.cssText =
       'display:none;padding:8px 10px;background:rgba(165,54,44,0.28);border:1px solid #d46559;' +
       'border-radius:6px;font-size:12px;color:#ffd5cf;';
 
-    this.continueBtn = this.makeButton('Continue World', '#4d8a64', '#f6fbf7');
+    this.continueBtn = this.makeButton('', '#4d8a64', '#f6fbf7');
     this.continueBtn.id = 'btn-continue-world';
     this.continueBtn.disabled = true;
     this.continueBtn.style.opacity = '0.45';
@@ -81,7 +113,6 @@ export class Menus {
 
     this.continueMetaEl = document.createElement('div');
     this.continueMetaEl.style.cssText = 'font-size:11px;color:#9da8b8;text-align:center;margin-top:-8px;';
-    this.continueMetaEl.textContent = 'No saved world yet';
 
     const divider = document.createElement('div');
     divider.style.cssText = 'height:1px;background:rgba(240,235,225,0.14);margin:2px 0;';
@@ -89,18 +120,17 @@ export class Menus {
     this.seedInput = document.createElement('input');
     this.seedInput.id = 'input-world-seed';
     this.seedInput.type = 'text';
-    this.seedInput.placeholder = 'World Seed (optional, e.g. 1337)';
     this.seedInput.style.cssText =
       'padding:10px 12px;background:#14181e;color:#f0ebe1;border:1px solid #596370;' +
       'border-radius:6px;font-size:13px;outline:none;';
 
-    const newWorldBtn = this.makeButton('Create New World', '#d6a44b', '#151920');
-    newWorldBtn.id = 'btn-new-world';
-    newWorldBtn.onclick = () => this.callbacks.onNewWorld(this.seedInput.value.trim());
+    this.newWorldBtn = this.makeButton('', '#d6a44b', '#151920');
+    this.newWorldBtn.id = 'btn-new-world';
+    this.newWorldBtn.onclick = () => this.callbacks.onNewWorld(this.seedInput.value.trim());
 
-    const settingsBtn = this.makeButton('Settings', '#363f4c', '#eef2f7');
-    settingsBtn.id = 'btn-main-settings';
-    settingsBtn.onclick = () => this.openSettings('main');
+    this.mainSettingsBtn = this.makeButton('', '#363f4c', '#eef2f7');
+    this.mainSettingsBtn.id = 'btn-main-settings';
+    this.mainSettingsBtn.onclick = () => this.openSettings('main');
 
     card.append(
       logoWrap,
@@ -109,8 +139,8 @@ export class Menus {
       this.continueMetaEl,
       divider,
       this.seedInput,
-      newWorldBtn,
-      settingsBtn
+      this.newWorldBtn,
+      this.mainSettingsBtn
     );
     this.mainMenuEl.appendChild(card);
     uiRoot.appendChild(this.mainMenuEl);
@@ -126,20 +156,28 @@ export class Menus {
     pCard.style.cssText =
       'width:320px;padding:24px;background:#202630;border:2px solid #5e6a7a;border-radius:10px;' +
       'display:flex;flex-direction:column;gap:10px;box-shadow:0 16px 40px rgba(0,0,0,0.55);';
-    const pTitle = document.createElement('div');
-    pTitle.textContent = 'Game Paused';
-    pTitle.style.cssText = 'font-size:20px;font-weight:800;color:#eed497;text-align:center;margin-bottom:6px;';
+    this.pauseTitleEl = document.createElement('div');
+    this.pauseTitleEl.style.cssText = 'font-size:20px;font-weight:800;color:#eed497;text-align:center;margin-bottom:6px;';
 
-    const resumeBtn = this.makeButton('Resume Game', '#d6a44b', '#151920');
-    resumeBtn.onclick = () => this.callbacks.onResume();
-    const saveBtn = this.makeButton('Save World', '#3e6f56', '#f2faf5');
-    saveBtn.onclick = () => this.callbacks.onSaveNow();
-    const pSettingsBtn = this.makeButton('Settings', '#363f4c', '#eef2f7');
-    pSettingsBtn.onclick = () => this.openSettings('pause');
-    const quitBtn = this.makeButton('Save & Main Menu', '#6d3939', '#fbeeee');
-    quitBtn.onclick = () => this.callbacks.onQuitToMenu();
+    this.pauseResumeBtn = this.makeButton('', '#d6a44b', '#151920');
+    this.pauseResumeBtn.onclick = () => this.callbacks.onResume();
+    this.pauseSaveBtn = this.makeButton('', '#3e6f56', '#f2faf5');
+    this.pauseSaveBtn.onclick = () => this.callbacks.onSaveNow();
+    this.pauseSettingsBtn = this.makeButton('', '#363f4c', '#eef2f7');
+    this.pauseSettingsBtn.onclick = () => this.openSettings('pause');
+    this.pauseLangBtn = this.makeButton('', '#2d3748', '#f0ebe1');
+    this.pauseLangBtn.onclick = () => this.toggleLanguage();
+    this.pauseQuitBtn = this.makeButton('', '#6d3939', '#fbeeee');
+    this.pauseQuitBtn.onclick = () => this.callbacks.onQuitToMenu();
 
-    pCard.append(pTitle, resumeBtn, saveBtn, pSettingsBtn, quitBtn);
+    pCard.append(
+      this.pauseTitleEl,
+      this.pauseResumeBtn,
+      this.pauseSaveBtn,
+      this.pauseSettingsBtn,
+      this.pauseLangBtn,
+      this.pauseQuitBtn
+    );
     this.pauseMenuEl.appendChild(pCard);
     uiRoot.appendChild(this.pauseMenuEl);
 
@@ -150,7 +188,6 @@ export class Menus {
       'position:absolute;inset:0;display:none;flex-direction:column;align-items:center;justify-content:center;' +
       'background:rgba(10,13,18,0.75);pointer-events:auto;z-index:34;';
     uiRoot.appendChild(this.settingsModalEl);
-    this.renderSettingsModal();
 
     // --- 4. Death Screen ---
     this.deathOverlayEl = document.createElement('div');
@@ -158,19 +195,54 @@ export class Menus {
     this.deathOverlayEl.style.cssText =
       'position:absolute;inset:0;display:none;flex-direction:column;align-items:center;justify-content:center;' +
       'gap:14px;background:rgba(68,14,14,0.78);pointer-events:auto;z-index:35;color:#f6ece8;';
-    const deathTitle = document.createElement('div');
-    deathTitle.textContent = 'You Perished';
-    deathTitle.style.cssText = 'font-size:34px;font-weight:800;letter-spacing:1px;';
+    this.deathTitleEl = document.createElement('div');
+    this.deathTitleEl.style.cssText = 'font-size:34px;font-weight:800;letter-spacing:1px;';
     this.deathCauseEl = document.createElement('div');
     this.deathCauseEl.style.cssText = 'font-size:14px;color:#e4c4bc;';
-    const respawnBtn = this.makeButton('Respawn at Camp', '#d6a44b', '#14181e');
-    respawnBtn.style.width = '220px';
-    respawnBtn.onclick = () => this.callbacks.onRespawn();
-    const deathMenuBtn = this.makeButton('Main Menu', '#363f4c', '#eef2f7');
-    deathMenuBtn.style.width = '220px';
-    deathMenuBtn.onclick = () => this.callbacks.onQuitToMenu();
-    this.deathOverlayEl.append(deathTitle, this.deathCauseEl, respawnBtn, deathMenuBtn);
+    this.deathRespawnBtn = this.makeButton('', '#d6a44b', '#14181e');
+    this.deathRespawnBtn.style.width = '220px';
+    this.deathRespawnBtn.onclick = () => this.callbacks.onRespawn();
+    this.deathMenuBtn = this.makeButton('', '#363f4c', '#eef2f7');
+    this.deathMenuBtn.style.width = '220px';
+    this.deathMenuBtn.onclick = () => this.callbacks.onQuitToMenu();
+    this.deathOverlayEl.append(this.deathTitleEl, this.deathCauseEl, this.deathRespawnBtn, this.deathMenuBtn);
     uiRoot.appendChild(this.deathOverlayEl);
+
+    this.refreshText();
+  }
+
+  private toggleLanguage(): void {
+    const next: Language = getLanguage() === 'zh' ? 'en' : 'zh';
+    this.currentSettings = { ...this.currentSettings, language: next };
+    this.callbacks.onSettingsChanged({ ...this.currentSettings });
+  }
+
+  refreshText(): void {
+    const t = uiText();
+    this.mainTitleEl.textContent = t.gameTitle;
+    this.mainSubtitleEl.textContent = t.gameSubtitle;
+    this.mainLangBtn.textContent = t.langSwitchBtn;
+    this.continueBtn.textContent = t.continueWorld;
+    this.seedInput.placeholder = t.seedPlaceholder;
+    this.newWorldBtn.textContent = t.createNewWorld;
+    this.mainSettingsBtn.textContent = t.settings;
+
+    this.pauseTitleEl.textContent = t.gamePaused;
+    this.pauseResumeBtn.textContent = t.resumeGame;
+    this.pauseSaveBtn.textContent = t.saveWorld;
+    this.pauseSettingsBtn.textContent = t.settings;
+    this.pauseLangBtn.textContent = t.langSwitchBtn;
+    this.pauseQuitBtn.textContent = t.saveAndMainMenu;
+
+    this.deathTitleEl.textContent = t.youPerished;
+    if (this.lastDeathCause) {
+      this.deathCauseEl.textContent = t.causePrefix(getDeathCauseDisplayName(this.lastDeathCause));
+    }
+    this.deathRespawnBtn.textContent = t.respawnAtCamp;
+    this.deathMenuBtn.textContent = t.mainMenu;
+
+    this.setSavedWorldSummary(this.latestSummary);
+    this.renderSettingsModal();
   }
 
   private makeButton(label: string, bg: string, fg: string): HTMLButtonElement {
@@ -183,18 +255,20 @@ export class Menus {
   }
 
   setSavedWorldSummary(summary: WorldSummary | null): void {
+    this.latestSummary = summary;
+    const t = uiText();
     if (!summary) {
       this.continueBtn.disabled = true;
       this.continueBtn.style.opacity = '0.45';
       this.continueBtn.style.cursor = 'not-allowed';
-      this.continueMetaEl.textContent = 'No saved world yet';
+      this.continueMetaEl.textContent = t.noSavedWorld;
       return;
     }
     this.continueBtn.disabled = false;
     this.continueBtn.style.opacity = '1';
     this.continueBtn.style.cursor = 'pointer';
     const day = Math.floor(summary.worldTime / DAY_LENGTH_TICKS) + 1;
-    this.continueMetaEl.textContent = `Saved Seed: ${summary.seed} · Day ${day}`;
+    this.continueMetaEl.textContent = t.savedMeta(summary.seed, day);
   }
 
   showMainWarning(message: string | null): void {
@@ -221,7 +295,8 @@ export class Menus {
   }
 
   showDeathScreen(cause: string): void {
-    this.deathCauseEl.textContent = `Cause: ${cause}`;
+    this.lastDeathCause = cause;
+    this.deathCauseEl.textContent = uiText().causePrefix(getDeathCauseDisplayName(cause));
     this.deathOverlayEl.style.display = 'flex';
     this.pauseMenuEl.style.display = 'none';
     this.mainMenuEl.style.display = 'none';
@@ -237,7 +312,7 @@ export class Menus {
 
   updateSettingsValues(settings: GameSettings): void {
     this.currentSettings = { ...settings };
-    this.renderSettingsModal();
+    this.refreshText();
   }
 
   openSettings(returnTo: 'main' | 'pause'): void {
@@ -249,6 +324,8 @@ export class Menus {
   }
 
   private renderSettingsModal(): void {
+    const t = uiText();
+    const curLang = getLanguage();
     this.settingsModalEl.innerHTML = '';
     const card = document.createElement('div');
     card.style.cssText =
@@ -256,9 +333,37 @@ export class Menus {
       'border-radius:10px;display:flex;flex-direction:column;gap:14px;color:#f0ebe1;';
 
     const title = document.createElement('div');
-    title.textContent = 'Settings';
+    title.textContent = t.settings;
     title.style.cssText = 'font-size:20px;font-weight:800;color:#eed497;text-align:center;';
     card.appendChild(title);
+
+    // Language segmented switch (简体中文 / English)
+    const langRow = document.createElement('div');
+    langRow.style.cssText = 'display:flex;justify-content:space-between;align-items:center;font-size:13px;';
+    const langLbl = document.createElement('span');
+    langLbl.textContent = t.languageLabel;
+    const langGroup = document.createElement('div');
+    langGroup.style.cssText = 'display:flex;gap:6px;';
+
+    const makeLangBtn = (lang: Language, label: string, id: string): HTMLButtonElement => {
+      const active = curLang === lang;
+      const b = document.createElement('button');
+      b.id = id;
+      b.textContent = label;
+      b.style.cssText =
+        `padding:5px 12px;border-radius:5px;font-size:12px;font-weight:700;cursor:pointer;` +
+        `background:${active ? '#d6a44b' : '#2d3542'};color:${active ? '#151920' : '#d8dee8'};` +
+        `border:1px solid ${active ? '#f0cf80' : '#4f5a6a'};`;
+      b.onclick = () => {
+        if (curLang === lang) return;
+        this.currentSettings = { ...this.currentSettings, language: lang };
+        this.callbacks.onSettingsChanged({ ...this.currentSettings });
+      };
+      return b;
+    };
+    langGroup.append(makeLangBtn('zh', '简体中文', 'btn-lang-zh'), makeLangBtn('en', 'English', 'btn-lang-en'));
+    langRow.append(langLbl, langGroup);
+    card.appendChild(langRow);
 
     const addSlider = (
       id: string,
@@ -297,24 +402,24 @@ export class Menus {
       card.appendChild(row);
     };
 
-    addSlider('setting-render-dist', 'Render Distance', 3, 12, 1, this.currentSettings.renderDistance, (v) => `${v} chunks`, (v) => {
+    addSlider('setting-render-dist', t.renderDistance, 3, 12, 1, this.currentSettings.renderDistance, t.chunksUnit, (v) => {
       this.currentSettings.renderDistance = v;
       this.callbacks.onSettingsChanged({ ...this.currentSettings });
     });
-    addSlider('setting-fov', 'Field of View (FOV)', 55, 105, 1, this.currentSettings.fov, (v) => `${v}°`, (v) => {
+    addSlider('setting-fov', t.fov, 55, 105, 1, this.currentSettings.fov, (v) => `${v}°`, (v) => {
       this.currentSettings.fov = v;
       this.callbacks.onSettingsChanged({ ...this.currentSettings });
     });
-    addSlider('setting-sens', 'Mouse Sensitivity', 0.2, 2.5, 0.05, this.currentSettings.mouseSensitivity, (v) => `${v.toFixed(2)}×`, (v) => {
+    addSlider('setting-sens', t.mouseSensitivity, 0.2, 2.5, 0.05, this.currentSettings.mouseSensitivity, (v) => `${v.toFixed(2)}×`, (v) => {
       this.currentSettings.mouseSensitivity = v;
       this.callbacks.onSettingsChanged({ ...this.currentSettings });
     });
-    addSlider('setting-volume', 'Master Volume', 0, 1, 0.05, this.currentSettings.volume, (v) => `${Math.round(v * 100)}%`, (v) => {
+    addSlider('setting-volume', t.masterVolume, 0, 1, 0.05, this.currentSettings.volume, (v) => `${Math.round(v * 100)}%`, (v) => {
       this.currentSettings.volume = v;
       this.callbacks.onSettingsChanged({ ...this.currentSettings });
     });
 
-    const backBtn = this.makeButton('Done', '#d6a44b', '#14181e');
+    const backBtn = this.makeButton(t.done, '#d6a44b', '#14181e');
     backBtn.id = 'btn-settings-done';
     backBtn.onclick = () => {
       if (this.settingsReturnTarget === 'main') this.showMainMenu();

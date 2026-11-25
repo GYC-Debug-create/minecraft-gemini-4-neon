@@ -85,11 +85,14 @@ export interface SlotRef {
 
 export type GameMode = 'menu' | 'playing' | 'paused' | 'dead';
 
+export type Language = 'zh' | 'en';
+
 export interface GameSettings {
   renderDistance: number;
   fov: number;
   mouseSensitivity: number;
   volume: number;
+  language?: Language;
 }
 
 export interface PlayerStateSnapshot {

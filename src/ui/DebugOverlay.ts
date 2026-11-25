@@ -1,5 +1,6 @@
 import { DAY_LENGTH_TICKS } from '../config/constants';
-import { BIOME_NAMES, BiomeId, PerfMetricsSnapshot, PlayerStateSnapshot } from '../core/types';
+import { getBiomeDisplayName, getLanguage, uiText } from '../core/i18n';
+import { BiomeId, PerfMetricsSnapshot, PlayerStateSnapshot } from '../core/types';
 import { worldToChunkCoord } from '../world/Chunk';
 
 export interface DebugOverlayData {
@@ -15,13 +16,14 @@ export interface DebugOverlayData {
 }
 
 function getCardinalFacing(yaw: number): string {
+  const t = uiText().facing;
   // yaw = 0 faces North (-Z), PI/2 faces West (-X), PI faces South (+Z), -PI/2 faces East (+X)
   const norm = ((yaw % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2);
   const deg = (norm * 180) / Math.PI;
-  if (deg >= 315 || deg < 45) return 'North (-Z)';
-  if (deg >= 45 && deg < 135) return 'West (-X)';
-  if (deg >= 135 && deg < 225) return 'South (+Z)';
-  return 'East (+X)';
+  if (deg >= 315 || deg < 45) return t.north;
+  if (deg >= 45 && deg < 135) return t.west;
+  if (deg >= 135 && deg < 225) return t.south;
+  return t.east;
 }
 
 export class DebugOverlay {
@@ -66,18 +68,34 @@ export class DebugOverlay {
     const pitchDeg = ((p.pitch * 180) / Math.PI).toFixed(1);
     const day = Math.floor(data.worldTime / DAY_LENGTH_TICKS) + 1;
     const tod = Math.floor(data.worldTime % DAY_LENGTH_TICKS);
+    const biomeName = getBiomeDisplayName(data.biome);
 
-    this.el.textContent = [
-      `STONEROOT [F3 Debug]`,
-      `FPS: ${data.perf.fps} | JS: ${data.perf.avgFrameJsMs.toFixed(2)}ms (max ${data.perf.maxFrameJsMs.toFixed(2)}ms)`,
-      `XYZ: ${p.pos.x.toFixed(2)}, ${p.pos.y.toFixed(2)}, ${p.pos.z.toFixed(2)}`,
-      `Block: ${bx}, ${by}, ${bz} | Chunk: (${cx}, ${cz})`,
-      `Facing: ${getCardinalFacing(p.yaw)} (${yawDeg}° / ${pitchDeg}°)`,
-      `Biome: ${BIOME_NAMES[data.biome]} | Seed: ${data.seed}`,
-      `Light: Sky ${data.skyLight} / Block ${data.blockLight} | Day ${day} (${tod})`,
-      `Target: ${data.targetText}`,
-      `Chunks: ${data.perf.loadedChunks} | Calls: ${data.perf.drawCalls} | Tris: ${data.perf.triangles}`,
-      `Worker Gen: ${data.perf.chunkGenAvgMs.toFixed(1)}ms | Mesh: ${data.perf.chunkMeshAvgMs.toFixed(1)}ms | Ent: ${data.entityCount}`,
-    ].join('\n');
+    if (getLanguage() === 'zh') {
+      this.el.textContent = [
+        `石根 STONEROOT [F3 调试]`,
+        `FPS: ${data.perf.fps} | JS: ${data.perf.avgFrameJsMs.toFixed(2)}ms (峰值 ${data.perf.maxFrameJsMs.toFixed(2)}ms)`,
+        `XYZ: ${p.pos.x.toFixed(2)}, ${p.pos.y.toFixed(2)}, ${p.pos.z.toFixed(2)}`,
+        `方块: ${bx}, ${by}, ${bz} | 区块 Chunk: (${cx}, ${cz})`,
+        `朝向 Facing: ${getCardinalFacing(p.yaw)} (${yawDeg}° / ${pitchDeg}°)`,
+        `群系 Biome: ${biomeName} | 种子: ${data.seed}`,
+        `光照 Light: 天空 ${data.skyLight} / 方块 ${data.blockLight} | 第 ${day} 天 (${tod})`,
+        `准星目标: ${data.targetText}`,
+        `已加载区块: ${data.perf.loadedChunks} | Draw Calls: ${data.perf.drawCalls} | 三角面: ${data.perf.triangles}`,
+        `Worker 生成: ${data.perf.chunkGenAvgMs.toFixed(1)}ms | 网格: ${data.perf.chunkMeshAvgMs.toFixed(1)}ms | 实体: ${data.entityCount}`,
+      ].join('\n');
+    } else {
+      this.el.textContent = [
+        `STONEROOT [F3 Debug]`,
+        `FPS: ${data.perf.fps} | JS: ${data.perf.avgFrameJsMs.toFixed(2)}ms (max ${data.perf.maxFrameJsMs.toFixed(2)}ms)`,
+        `XYZ: ${p.pos.x.toFixed(2)}, ${p.pos.y.toFixed(2)}, ${p.pos.z.toFixed(2)}`,
+        `Block: ${bx}, ${by}, ${bz} | Chunk: (${cx}, ${cz})`,
+        `Facing: ${getCardinalFacing(p.yaw)} (${yawDeg}° / ${pitchDeg}°)`,
+        `Biome: ${biomeName} | Seed: ${data.seed}`,
+        `Light: Sky ${data.skyLight} / Block ${data.blockLight} | Day ${day} (${tod})`,
+        `Target: ${data.targetText}`,
+        `Chunks: ${data.perf.loadedChunks} | Calls: ${data.perf.drawCalls} | Tris: ${data.perf.triangles}`,
+        `Worker Gen: ${data.perf.chunkGenAvgMs.toFixed(1)}ms | Mesh: ${data.perf.chunkMeshAvgMs.toFixed(1)}ms | Ent: ${data.entityCount}`,
+      ].join('\n');
+    }
   }
 }

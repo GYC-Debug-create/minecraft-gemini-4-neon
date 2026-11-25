@@ -1,4 +1,5 @@
 import { CHEST_SIZE, HOTBAR_SIZE, TOTAL_INVENTORY_SIZE } from '../config/constants';
+import { getDisplayName, uiText } from '../core/i18n';
 import { ArmorSlot, BlockPos, ItemStack } from '../core/types';
 import { ItemRegistry } from '../registry/items';
 import { TextureAtlas } from '../engine/TextureAtlas';
@@ -130,6 +131,7 @@ export class InventoryUI {
     const inv = this.getInventory();
     this.panel.innerHTML = '';
 
+    const t = uiText();
     // Header
     const header = document.createElement('div');
     header.style.cssText =
@@ -137,17 +139,17 @@ export class InventoryUI {
       'border-bottom:1px solid rgba(240,235,225,0.14);padding-bottom:8px;';
     const titles: Record<OpenScreenKind, string> = {
       none: '',
-      inventory: 'Satchel & Hand Crafting (2×2)',
-      workbench: 'Crafting Bench (3×3)',
-      furnace: 'Stone Kiln',
-      chest: 'Timber Chest',
+      inventory: t.screenInventory,
+      workbench: t.screenWorkbench,
+      furnace: t.screenFurnace,
+      chest: t.screenChest,
     };
     const title = document.createElement('div');
     title.textContent = titles[this.active.kind];
     title.style.cssText = 'font-size:16px;font-weight:700;letter-spacing:0.3px;color:#e8cf8e;';
 
     const closeBtn = document.createElement('button');
-    closeBtn.textContent = 'Close [Esc]';
+    closeBtn.textContent = t.closeEsc;
     closeBtn.style.cssText =
       'background:#373f4b;color:#f0ebe1;border:1px solid #5c6675;border-radius:4px;' +
       'padding:4px 10px;cursor:pointer;font-size:12px;';
@@ -167,7 +169,7 @@ export class InventoryUI {
         const armorCol = document.createElement('div');
         armorCol.style.cssText = 'display:flex;flex-direction:column;gap:4px;';
         const armorTitle = document.createElement('div');
-        armorTitle.textContent = `Armor (${inv.getTotalArmorDefense()})`;
+        armorTitle.textContent = t.armorLabel(inv.getTotalArmorDefense());
         armorTitle.style.cssText = 'font-size:11px;color:#b8c0cc;margin-bottom:2px;';
         armorCol.appendChild(armorTitle);
 
@@ -181,7 +183,7 @@ export class InventoryUI {
                 e,
                 (s) => ItemRegistry.get(s.itemId)?.armorSlot === slot
               ),
-              slot[0].toUpperCase()
+              t.armorSlotShort[slot]
             )
           );
         }
@@ -251,14 +253,14 @@ export class InventoryUI {
         'flex:1;max-height:148px;overflow-y:auto;background:rgba(12,15,20,0.45);' +
         'border:1px solid rgba(240,235,225,0.14);border-radius:6px;padding:6px;';
       const rTitle = document.createElement('div');
-      rTitle.textContent = 'Quick Craft';
+      rTitle.textContent = t.quickCraft;
       rTitle.style.cssText = 'font-size:11px;color:#b8c0cc;margin-bottom:5px;';
       recipeList.appendChild(rTitle);
 
       const craftables = getCraftableRecipes(inv, this.active.kind === 'workbench');
       if (craftables.length === 0) {
         const empty = document.createElement('div');
-        empty.textContent = 'Gather wood, stone, or ore to unlock recipes.';
+        empty.textContent = t.quickCraftEmpty;
         empty.style.cssText = 'font-size:11px;color:#7e8794;';
         recipeList.appendChild(empty);
       } else {
@@ -267,8 +269,9 @@ export class InventoryUI {
         for (const r of craftables) {
           const def = ItemRegistry.get(r.output.itemId);
           if (!def) continue;
+          const itemLabel = getDisplayName(def.key, def.name);
           const btn = document.createElement('button');
-          btn.title = `Craft ${def.name} ×${r.output.count}`;
+          btn.title = t.craftTooltip(itemLabel, r.output.count);
           btn.style.cssText =
             'display:flex;align-items:center;gap:4px;padding:3px 6px;background:#2f3743;' +
             'border:1px solid #596370;border-radius:4px;color:#f0ebe1;cursor:pointer;font-size:11px;';
@@ -276,7 +279,7 @@ export class InventoryUI {
           img.src = this.atlas.getItemIcon(def.icon);
           img.style.cssText = 'width:18px;height:18px;image-rendering:pixelated;';
           const lbl = document.createElement('span');
-          lbl.textContent = r.output.count > 1 ? `${def.name} ×${r.output.count}` : def.name;
+          lbl.textContent = r.output.count > 1 ? `${itemLabel} ×${r.output.count}` : itemLabel;
           btn.append(img, lbl);
           btn.onclick = () => {
             craftRecipeFromInventory(inv, r.id, this.active.kind === 'workbench');
@@ -308,7 +311,7 @@ export class InventoryUI {
 
     // Main Inventory (27 slots)
     const invLabel = document.createElement('div');
-    invLabel.textContent = 'Backpack';
+    invLabel.textContent = t.backpack;
     invLabel.style.cssText = 'font-size:11px;color:#b8c0cc;margin-bottom:4px;';
     this.panel.appendChild(invLabel);
 
@@ -323,7 +326,7 @@ export class InventoryUI {
 
     // Hotbar (9 slots)
     const hotLabel = document.createElement('div');
-    hotLabel.textContent = 'Hotbar (1–9)';
+    hotLabel.textContent = t.hotbarLabel;
     hotLabel.style.cssText = 'font-size:11px;color:#b8c0cc;margin-bottom:4px;';
     this.panel.appendChild(hotLabel);
 
@@ -340,6 +343,7 @@ export class InventoryUI {
   }
 
   private renderFurnaceSection(f: FurnaceContainer): HTMLElement {
+    const t = uiText();
     const wrap = document.createElement('div');
     wrap.style.cssText = 'display:flex;align-items:center;gap:16px;';
 
@@ -351,7 +355,7 @@ export class InventoryUI {
         (v) => { f.input = v; },
         e
       ),
-      'Ore'
+      t.furnaceInput
     );
     const burnPct = f.burnTimeMax > 0 ? Math.round((f.burnTime / f.burnTimeMax) * 100) : 0;
     const flame = document.createElement('div');
@@ -363,7 +367,7 @@ export class InventoryUI {
         (v) => { f.fuel = v; },
         e
       ),
-      'Fuel'
+      t.furnaceFuel
     );
     leftCol.append(inSlot, flame, fuelSlot);
 
@@ -390,7 +394,7 @@ export class InventoryUI {
           () => false // output slot is take-only
         );
       }
-    }, 'Out');
+    }, t.furnaceOutput);
 
     wrap.append(leftCol, progBar, outSlot);
     return wrap;
@@ -561,10 +565,11 @@ export class InventoryUI {
     if (stack && stack.count > 0) {
       const def = ItemRegistry.get(stack.itemId);
       if (def) {
+        const itemLabel = getDisplayName(def.key, def.name);
         cell.title =
           stack.durability !== undefined && def.durability
-            ? `${def.name} (${stack.durability}/${def.durability})`
-            : def.name;
+            ? `${itemLabel} (${stack.durability}/${def.durability})`
+            : itemLabel;
         const img = document.createElement('img');
         img.src = this.atlas.getItemIcon(def.icon);
         img.style.cssText = 'width:28px;height:28px;image-rendering:pixelated;pointer-events:none;';

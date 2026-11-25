@@ -18,12 +18,19 @@ test('M7 UI & IndexedDB saves: settings persist, terrain + inventory + chest per
   const screenshotDir = path.resolve('docs/screenshots');
   fs.mkdirSync(screenshotDir, { recursive: true });
 
-  // 1) Open bare root "/" -> Main Menu visible
+  // 1) Open bare root "/" -> Main Menu visible (defaults to Chinese, supports instant ZH/EN switching)
   await page.goto('/');
   await page.waitForFunction(() => Boolean(window.__game && window.__game.ready()), { timeout: 20_000 });
   await expect(page.locator('#main-menu')).toBeVisible();
+  await expect(page.locator('#btn-new-world')).toHaveText('创建新世界');
   await page.waitForTimeout(400);
   await page.screenshot({ path: path.join(screenshotDir, 'M7-main-menu.png') });
+
+  // Toggle to English & back to Chinese via quick toggle button
+  await page.click('#btn-lang-toggle');
+  await expect(page.locator('#btn-new-world')).toHaveText('Create New World');
+  await page.click('#btn-lang-toggle');
+  await expect(page.locator('#btn-new-world')).toHaveText('创建新世界');
 
   // 2) Change settings via Settings modal & verify persistence across reload
   await page.click('#btn-main-settings');

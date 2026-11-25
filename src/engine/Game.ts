@@ -1,6 +1,7 @@
 import { BALANCE } from '../config/balance';
 import { CHUNK_SIZE, CURRENT_SAVE_VERSION, DAY_LENGTH_TICKS, FIXED_DT } from '../config/constants';
 import { EventBus } from '../core/events';
+import { getDisplayName, setLanguage, uiText } from '../core/i18n';
 import { stringToSeed } from '../core/rng';
 import {
   BIOME_NAMES,
@@ -137,6 +138,7 @@ export class Game {
   private disposed = false;
 
   constructor(canvas: HTMLCanvasElement, uiRoot: HTMLElement, initialSeedParam: string | null = null) {
+    setLanguage(this.settings.language ?? 'zh');
     const startDirect = initialSeedParam !== null && initialSeedParam.trim().length > 0;
     const seedNum = stringToSeed(startDirect ? initialSeedParam : 1337);
     this.worldId = `world-${seedNum}`;
@@ -244,9 +246,12 @@ export class Game {
 
   applySettings(partial: Partial<GameSettings>, persist = true): void {
     this.settings = sanitizeSettings({ ...this.settings, ...partial });
+    setLanguage(this.settings.language ?? 'zh');
     this.renderer.setFov(this.settings.fov);
     this.audio.setVolume(this.settings.volume);
     this.menus.updateSettingsValues(this.settings);
+    this.inventoryUI.refresh();
+    this.updateHudText();
     if (persist) {
       void this.saveManager.saveSettings(this.settings);
     }
@@ -280,7 +285,7 @@ export class Game {
     const res = await this.saveManager.loadLatestWorld();
     if (!res.ok) {
       if (!res.empty) {
-        this.menus.showMainWarning(`Save could not be loaded (${res.reason}). Starting a fresh world.`);
+        this.menus.showMainWarning(uiText().saveLoadFailed(res.reason));
         await this.startNewWorld(1337);
       }
       return;
@@ -319,7 +324,7 @@ export class Game {
     this.lastAutoSaveMs = performance.now();
 
     if (res.migrated) {
-      this.hud.showNotice('Legacy world save upgraded to latest format.');
+      this.hud.showNotice(uiText().legacyUpgraded);
     }
     // Immediately hydrate any saved modified chunks around player so getBlock() is instant!
     this.streamChunks();
@@ -395,7 +400,7 @@ export class Game {
         worldTime: savePayload.worldTime,
         savedAt: savePayload.savedAt,
       });
-      this.hud.showNotice('World saved');
+      this.hud.showNotice(uiText().worldSaved);
       this.events.emit('world:saved', { worldId: this.worldId, timestamp: savePayload.savedAt });
     } finally {
       this.saveInProgress = false;
@@ -694,7 +699,8 @@ export class Game {
       this.renderHotbar();
       const held = this.player.inventory.getSelected();
       if (held) {
-        this.hud.showHeldItemName(ItemRegistry.get(held.itemId)?.name ?? null);
+        const def = ItemRegistry.get(held.itemId);
+        this.hud.showHeldItemName(def ? getDisplayName(def.key, def.name) : null);
       }
     }
   }
@@ -1291,6 +1297,7 @@ export class Game {
       if (hit.blockId === BlockId.Bed) {
         const res = this.survival.useBed(this.player, hit.pos.x, hit.pos.y, hit.pos.z, this.worldTime);
         this.worldTime = res.newWorldTime;
+        this.hud.showNotice(res.slept ? uiText().bedUsedNight : uiText().bedUsedDay);
         return true;
       }
 
@@ -1710,8 +1717,11 @@ export class Game {
     if (!this.debugOverlay.isVisible()) return;
     const biome = this.world.getBiome(this.player.pos.x, this.player.pos.z);
     const targetText = this.currentTarget
-      ? `${BlockRegistry.get(this.currentTarget.blockId).name} (${this.currentTarget.pos.x},${this.currentTarget.pos.y},${this.currentTarget.pos.z})`
-      : 'None';
+      ? (() => {
+          const bDef = BlockRegistry.get(this.currentTarget.blockId);
+          return `${getDisplayName(bDef.key, bDef.name)} (${this.currentTarget.pos.x},${this.currentTarget.pos.y},${this.currentTarget.pos.z})`;
+        })()
+      : uiText().none;
     const eye = this.player.getEyePosition();
     this.debugOverlay.update({
       seed: this.world.seed,

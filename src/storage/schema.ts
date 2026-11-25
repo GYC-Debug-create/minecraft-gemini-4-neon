@@ -137,10 +137,14 @@ export function migrateWorldSave(raw: unknown): MigrationResult {
 export function sanitizeSettings(raw: Partial<GameSettings> | undefined): GameSettings {
   const clamp = (v: unknown, lo: number, hi: number, fallback: number): number =>
     typeof v === 'number' && Number.isFinite(v) ? Math.max(lo, Math.min(hi, v)) : fallback;
-  return {
+  const out: GameSettings = {
     renderDistance: Math.round(clamp(raw?.renderDistance, 3, 12, BALANCE.defaults.renderDistance)),
     fov: Math.round(clamp(raw?.fov, 55, 110, BALANCE.defaults.fov)),
     mouseSensitivity: Number(clamp(raw?.mouseSensitivity, 0.2, 2.5, BALANCE.defaults.mouseSensitivity).toFixed(2)),
     volume: Number(clamp(raw?.volume, 0, 1, BALANCE.defaults.volume).toFixed(2)),
   };
+  if (raw?.language === 'zh' || raw?.language === 'en') {
+    out.language = raw.language;
+  }
+  return out;
 }
