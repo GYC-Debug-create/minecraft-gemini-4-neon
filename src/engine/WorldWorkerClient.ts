@@ -10,6 +10,7 @@ export interface GeneratedChunkResult {
   chunk: Chunk;
   mesh: ChunkMeshData;
   genMs: number;
+  villageChests: Array<{ x: number; y: number; z: number; lootSeed: number }>;
 }
 
 export class WorldWorkerClient {
@@ -131,7 +132,8 @@ export class WorldWorkerClient {
       this.meshCount++;
       const chunk = new Chunk(msg.cx, msg.cz, msg.blocks, msg.light, msg.meta, msg.biomes);
       chunk.dirty = false;
-      pending.resolve({ chunk, mesh: msg.mesh, genMs: msg.genMs });
+      chunk.hasFarmBlocks = msg.hasFarmBlocks;
+      pending.resolve({ chunk, mesh: msg.mesh, genMs: msg.genMs, villageChests: msg.villageChests });
     } else if (msg.type === 'chunkMeshed') {
       const pending = this.pendingMesh.get(msg.requestId);
       if (!pending) return;

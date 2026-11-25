@@ -53,6 +53,8 @@ export type WorkerResponse =
       light: Uint8Array;
       meta: Uint8Array;
       biomes: Uint8Array;
+      hasFarmBlocks: boolean;
+      villageChests: Array<{ x: number; y: number; z: number; lootSeed: number }>;
       mesh: ChunkMeshData;
       genMs: number;
     }

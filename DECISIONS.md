@@ -36,6 +36,15 @@
   - Default `D:\node.exe` in system PATH is `v16.20.2`, which is below the SPEC requirement (`≥18`). Found pre-installed `v22.23.5` at `C:\Users\Administrator\AppData\Local\pi-node\current\node.exe`. We prepend that directory to `PATH` in our build/test commands rather than modifying global OS environment settings.
 - **Spawn Waystone Torch**:
   - When a new world's initial spawn chunk finishes loading, a single Pitch Torch is placed on the ground 2 blocks beside the world's spawn point (marking the player's origin). This preserves a 100% empty starting inventory while giving players (and M3+ E2E lighting tests) an immediate natural in-world torch they can legitimately mine and relocate into caves without ever injecting items into inventory.
+- **IndexedDB Save Schema & Modified-Chunk-Only Storage**:
+  - Save DB (`stoneroot-saves`) stores `worlds`, `chunks`, and `settings` separately with `CURRENT_SAVE_VERSION = 2`. Only chunks where the player modified blocks are persisted in IndexedDB; unmodified terrain regenerates deterministically from the world seed. Pure migration (`migrateWorldSave`) upgrades v1 → v2 and safely rejects corrupt/future versions with a non-crashing UI warning and fresh start.
+- **Main-Thread Frame Budget & Worker Offloading (M8)**:
+  - To guarantee `< 8ms` main-thread JS frame time even at Render Distance 8 (`197` chunks) during rapid chunk-border crossings: (1) chunk terrain, village chest discovery, initial lighting, and meshing run in the Web Worker; (2) completed Worker payloads drain via a shared ~2.6ms/frame time-sliced queue (while priority player-edit remeshes upload immediately with zero latency); (3) `World` maps chunks using exact 52-bit integer keys + 1-slot cache (zero string allocations); (4) `propagateCrossChunkLight` diffs chunk boundary light directly on flat `Uint8Array`s so already-matching sky-15 air columns do zero BFS work; (5) `Chunk.hasFarmBlocks` lets `FarmingSystem` skip non-farm chunks in O(1); (6) `Renderer` assigns a precomputed local chunk bounding sphere (`center=(8,64,8), r=65.5`) instead of scanning all vertices on upload.
+- **Procedural Audio & Pooled Particles (M8)**:
+  - All 13 game sound cues (`dig`, `break`, `place`, `step`, `splash`, `hit`, `hurt`, `bow`, `eat`, `pickup`, `door`, `craft`, `ui`) are synthesized at runtime via WebAudio oscillators and filtered noise buffers (zero external files), safely degrading to no-op in headless/muted environments.
+  - Dig, block-break, water-splash, and ember particles use a single 256-instance `THREE.InstancedMesh` (1 draw call total, zero per-frame allocations).
+- **Root URL vs `?seed=` Entry Flow**:
+  - Opening `/` displays the original **Stoneroot** Main Menu over a live orbiting 3D voxel landscape (with New World, Continue World, and Settings). Opening `/?seed=<value>` launches directly into gameplay for automated E2E scenarios and quick seed sharing.
 
 ## 3. Out-of-Scope Enforcement (SPEC §3.2)
 Explicitly excluded and will not be implemented:

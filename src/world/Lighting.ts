@@ -274,6 +274,7 @@ export function recomputeWorldLighting(world: World): void {
 
 /**
  * Exchanges boundary sky/block light between chunk (cx, cz) and its loaded 4 neighbors.
+ * Uses direct flat-array seam differential checks so matching sky-15 air columns do zero BFS work.
  */
 export function propagateCrossChunkLight(world: World, cx: number, cz: number): void {
   const chunk = world.getChunk(cx, cz);
@@ -282,30 +283,70 @@ export function propagateCrossChunkLight(world: World, cx: number, cz: number): 
   const baseZ = cz * CHUNK_SIZE;
   const skyQ: number[] = [];
   const blockQ: number[] = [];
-  const touched = new Set<string>();
 
-  const seedEdge = (wx: number, wz: number): void => {
-    for (let y = 0; y < WORLD_HEIGHT; y++) {
-      if (world.getSkyLight(wx, y, wz) > 1) skyQ.push(wx, y, wz);
-      if (world.getBlockLight(wx, y, wz) > 1) blockQ.push(wx, y, wz);
+  const cBlocks = chunk.blocks;
+  const cLight = chunk.light;
+
+  const checkPair = (
+    nb: Chunk | undefined,
+    nbBaseX: number,
+    nbBaseZ: number,
+    isXBorder: boolean,
+    myFixed: number,
+    nbFixed: number
+  ): void => {
+    if (!nb) return;
+    const nBlocks = nb.blocks;
+    const nLight = nb.light;
+    for (let i = 0; i < CHUNK_SIZE; i++) {
+      const myLx = isXBorder ? myFixed : i;
+      const myLz = isXBorder ? i : myFixed;
+      const nbLx = isXBorder ? nbFixed : i;
+      const nbLz = isXBorder ? i : nbFixed;
+      const myWx = baseX + myLx;
+      const myWz = baseZ + myLz;
+      const nbWx = nbBaseX + nbLx;
+      const nbWz = nbBaseZ + nbLz;
+      const myCol = (myLz << 4) | myLx;
+      const nbCol = (nbLz << 4) | nbLx;
+
+      for (let y = 0; y < WORLD_HEIGHT; y++) {
+        const yOff = y << 8;
+        const myIdx = yOff | myCol;
+        const nbIdx = yOff | nbCol;
+        const mL = cLight[myIdx];
+        const nL = nLight[nbIdx];
+        if (mL === nL) continue;
+
+        const mSky = mL >>> 4;
+        const nSky = nL >>> 4;
+        if (mSky > nSky + 1 && getOpacity(nBlocks[nbIdx] as BlockId) < MAX_LIGHT) {
+          skyQ.push(myWx, y, myWz);
+        } else if (nSky > mSky + 1 && getOpacity(cBlocks[myIdx] as BlockId) < MAX_LIGHT) {
+          skyQ.push(nbWx, y, nbWz);
+        }
+
+        const mBlk = mL & 0x0f;
+        const nBlk = nL & 0x0f;
+        if (mBlk > nBlk + 1 && getOpacity(nBlocks[nbIdx] as BlockId) < MAX_LIGHT) {
+          blockQ.push(myWx, y, myWz);
+        } else if (nBlk > mBlk + 1 && getOpacity(cBlocks[myIdx] as BlockId) < MAX_LIGHT) {
+          blockQ.push(nbWx, y, nbWz);
+        }
+      }
     }
   };
 
-  // Seed this chunk's border columns + adjacent neighbor border columns
-  for (let i = 0; i < CHUNK_SIZE; i++) {
-    seedEdge(baseX, baseZ + i);
-    seedEdge(baseX + CHUNK_SIZE - 1, baseZ + i);
-    seedEdge(baseX + i, baseZ);
-    seedEdge(baseX + i, baseZ + CHUNK_SIZE - 1);
+  checkPair(world.getChunk(cx - 1, cz), baseX - CHUNK_SIZE, baseZ, true, 0, CHUNK_SIZE - 1);
+  checkPair(world.getChunk(cx + 1, cz), baseX + CHUNK_SIZE, baseZ, true, CHUNK_SIZE - 1, 0);
+  checkPair(world.getChunk(cx, cz - 1), baseX, baseZ - CHUNK_SIZE, false, 0, CHUNK_SIZE - 1);
+  checkPair(world.getChunk(cx, cz + 1), baseX, baseZ + CHUNK_SIZE, false, CHUNK_SIZE - 1, 0);
 
-    if (world.hasChunk(cx - 1, cz)) seedEdge(baseX - 1, baseZ + i);
-    if (world.hasChunk(cx + 1, cz)) seedEdge(baseX + CHUNK_SIZE, baseZ + i);
-    if (world.hasChunk(cx, cz - 1)) seedEdge(baseX + i, baseZ - 1);
-    if (world.hasChunk(cx, cz + 1)) seedEdge(baseX + i, baseZ + CHUNK_SIZE);
-  }
+  if (skyQ.length === 0 && blockQ.length === 0) return;
 
-  floodSkyLight(world, skyQ, touched);
-  floodBlockLight(world, blockQ, touched);
+  const touched = new Set<string>();
+  if (skyQ.length > 0) floodSkyLight(world, skyQ, touched);
+  if (blockQ.length > 0) floodBlockLight(world, blockQ, touched);
   emitDirtyTouched(world, touched);
 }
 

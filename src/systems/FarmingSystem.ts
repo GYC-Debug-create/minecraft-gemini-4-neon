@@ -69,6 +69,7 @@ export class FarmingSystem {
 
   private runGrowthPass(world: World): void {
     for (const chunk of world.getLoadedChunks()) {
+      if (!chunk.hasFarmBlocks) continue;
       const baseX = chunk.cx * CHUNK_SIZE;
       const baseZ = chunk.cz * CHUNK_SIZE;
       const blocks = chunk.blocks;

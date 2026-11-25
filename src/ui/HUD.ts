@@ -16,6 +16,9 @@ export class HUD {
 
   private lastToastTime = 0;
   private lastNoticeTime = 0;
+  private lastHurtOpacity = '';
+  private lastWaterOpacity = '';
+  private lastVitalsKey = '';
 
   constructor(uiRoot: HTMLElement, atlas: TextureAtlas) {
     this.atlas = atlas;
@@ -96,9 +99,16 @@ export class HUD {
   }
 
   updateEffects(player: Player): void {
-    this.hurtOverlayEl.style.opacity =
-      player.hurtFlashSec > 0 ? String(Math.min(1, player.hurtFlashSec * 2.8)) : '0';
-    this.waterOverlayEl.style.opacity = player.headInWater ? '1' : '0';
+    const hurtOp = player.hurtFlashSec > 0 ? String(Math.min(1, Number((player.hurtFlashSec * 2.8).toFixed(2)))) : '0';
+    if (hurtOp !== this.lastHurtOpacity) {
+      this.hurtOverlayEl.style.opacity = hurtOp;
+      this.lastHurtOpacity = hurtOp;
+    }
+    const waterOp = player.headInWater ? '1' : '0';
+    if (waterOp !== this.lastWaterOpacity) {
+      this.waterOverlayEl.style.opacity = waterOp;
+      this.lastWaterOpacity = waterOp;
+    }
 
     const now = performance.now();
     if (this.lastToastTime > 0 && now - this.lastToastTime > 1800) {
@@ -116,6 +126,9 @@ export class HUD {
     const hung = Math.ceil(player.hunger);
     const armor = player.armorDefense;
     const o2 = Math.ceil(player.oxygen);
+    const key = `${hp}:${hung}:${armor}:${o2}:${player.headInWater ? 1 : 0}`;
+    if (key === this.lastVitalsKey) return;
+    this.lastVitalsKey = key;
 
     const buildPips = (val: number, max: number, fullColor: string, halfColor: string, emptyColor: string, sym: string): string => {
       const count = Math.ceil(max / 2);

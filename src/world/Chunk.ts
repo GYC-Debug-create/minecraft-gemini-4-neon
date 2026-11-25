@@ -37,6 +37,7 @@ export class Chunk {
   dirty = true;
   modified = false;
   lightInitialized = false;
+  hasFarmBlocks = false;
 
   constructor(
     cx: number,
@@ -68,6 +69,9 @@ export class Chunk {
     const idx = chunkIndex(lx, y, lz);
     this.blocks[idx] = id;
     this.meta[idx] = meta;
+    if (id >= BlockId.Farmland && id <= BlockId.CropStage2) {
+      this.hasFarmBlocks = true;
+    }
     this.dirty = true;
   }
 
@@ -130,16 +134,24 @@ export class Chunk {
   }
 
   static deserialize(data: SerializedChunk): Chunk {
+    const blocks = new Uint8Array(data.blocks);
     const chunk = new Chunk(
       data.cx,
       data.cz,
-      new Uint8Array(data.blocks),
+      blocks,
       new Uint8Array(CHUNK_VOLUME),
       new Uint8Array(data.meta),
       new Uint8Array(data.biomes)
     );
     chunk.modified = true;
     chunk.dirty = true;
+    for (let i = 0; i < blocks.length; i++) {
+      const id = blocks[i];
+      if (id >= BlockId.Farmland && id <= BlockId.CropStage2) {
+        chunk.hasFarmBlocks = true;
+        break;
+      }
+    }
     return chunk;
   }
 }

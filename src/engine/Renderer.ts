@@ -92,21 +92,40 @@ export class Renderer {
   private readonly sunMesh: THREE.Mesh;
   private readonly moonMesh: THREE.Mesh;
   private readonly cloudsGroup: THREE.Group;
+  private readonly cloudMat: THREE.MeshBasicMaterial;
   private readonly ambientLight: THREE.AmbientLight;
   private readonly sunLight: THREE.DirectionalLight;
+
+  // Reusable color constants & scratch vectors (zero per-frame allocations)
+  private readonly colDayZenith = new THREE.Color(0x4b8ec9);
+  private readonly colDayHorizon = new THREE.Color(0xa6cfe9);
+  private readonly colDuskZenith = new THREE.Color(0x3a3b6e);
+  private readonly colDuskHorizon = new THREE.Color(0xe37c46);
+  private readonly colNightZenith = new THREE.Color(0x060a16);
+  private readonly colNightHorizon = new THREE.Color(0x111a30);
+  private readonly colWaterFog = new THREE.Color(0x1f5678);
+  private readonly colDaySkyLight = new THREE.Color(1.0, 0.99, 0.96);
+  private readonly colDuskSkyLight = new THREE.Color(0.96, 0.56, 0.34);
+  private readonly colNightSkyLight = new THREE.Color(0.06, 0.08, 0.16);
+  private readonly scratchZenith = new THREE.Color();
+  private readonly scratchHorizon = new THREE.Color();
+  private readonly scratchSkyLight = new THREE.Color();
+  private readonly bgColor = new THREE.Color(0x88bce0);
 
   // Block selection outline & break crack overlay
   private readonly selectionBox: THREE.LineSegments;
   private readonly breakOverlay: THREE.Mesh;
   private readonly breakOverlayMat: THREE.MeshBasicMaterial;
 
-  // First-person held item / hand
+  // First-person held item / hand + walk bobbing
   private readonly handGroup: THREE.Group;
-  private readonly handArm: THREE.Mesh;
+  private readonly handArm: THREE.Group;
   private readonly handItemMesh: THREE.Mesh;
   private readonly handItemMat: THREE.MeshBasicMaterial;
+  private readonly iconTextureCache = new Map<string, THREE.Texture>();
   private swingTime = 0;
   private bobPhase = 0;
+  private bobStrength = 0;
 
   private lastDrawCalls = 0;
   private lastTriangles = 0;
@@ -123,7 +142,7 @@ export class Renderer {
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
 
     this.scene = new THREE.Scene();
-    this.scene.background = new THREE.Color(0x88bce0);
+    this.scene.background = this.bgColor;
 
     this.camera = new THREE.PerspectiveCamera(fov, window.innerWidth / window.innerHeight, 0.08, 420);
     this.camera.rotation.order = 'YXZ';
@@ -243,6 +262,12 @@ export class Renderer {
     this.moonMesh = new THREE.Mesh(moonGeo, moonMat);
     this.moonMesh.renderOrder = -2;
 
+    this.cloudMat = new THREE.MeshBasicMaterial({
+      color: 0xf7f5ef,
+      transparent: true,
+      opacity: 0.72,
+      depthWrite: false,
+    });
     this.cloudsGroup = this.buildClouds();
     this.skyGroup.add(skyDome, starField, this.sunMesh, this.moonMesh, this.cloudsGroup);
     this.scene.add(this.skyGroup);
@@ -268,18 +293,34 @@ export class Renderer {
     this.breakOverlay.renderOrder = 3;
     this.scene.add(this.breakOverlay);
 
-    // First-person hand / held item attached to camera
+    // First-person hand / tunic cuff / held item attached to camera
     this.handGroup = new THREE.Group();
     this.handGroup.position.set(0.42, -0.38, -0.62);
-    const armGeo = new THREE.BoxGeometry(0.16, 0.44, 0.16);
-    const armMat = new THREE.MeshLambertMaterial({ color: 0xc99c74 });
-    this.handArm = new THREE.Mesh(armGeo, armMat);
+    this.handArm = new THREE.Group();
+    const forearm = new THREE.Mesh(
+      new THREE.BoxGeometry(0.15, 0.3, 0.15),
+      new THREE.MeshLambertMaterial({ color: 0xc99c74 })
+    );
+    forearm.position.set(0, 0.06, 0);
+    forearm.renderOrder = 10;
+    const cuff = new THREE.Mesh(
+      new THREE.BoxGeometry(0.168, 0.18, 0.168),
+      new THREE.MeshLambertMaterial({ color: 0x4b6b47 })
+    );
+    cuff.position.set(0, -0.14, 0);
+    cuff.renderOrder = 10;
+    const wristBand = new THREE.Mesh(
+      new THREE.BoxGeometry(0.174, 0.04, 0.174),
+      new THREE.MeshLambertMaterial({ color: 0x7a5132 })
+    );
+    wristBand.position.set(0, -0.05, 0);
+    wristBand.renderOrder = 10;
+    this.handArm.add(forearm, cuff, wristBand);
     this.handArm.rotation.set(0.65, -0.25, 0.35);
-    this.handArm.renderOrder = 10;
 
     this.handItemMat = new THREE.MeshBasicMaterial({ transparent: true, side: THREE.DoubleSide, depthTest: false });
     this.handItemMesh = new THREE.Mesh(new THREE.PlaneGeometry(0.34, 0.34), this.handItemMat);
-    this.handItemMesh.position.set(-0.04, 0.12, -0.05);
+    this.handItemMesh.position.set(-0.04, 0.14, -0.05);
     this.handItemMesh.rotation.set(0.15, -0.35, 0.1);
     this.handItemMesh.visible = false;
     this.handItemMesh.renderOrder = 11;
@@ -293,12 +334,6 @@ export class Renderer {
 
   private buildClouds(): THREE.Group {
     const group = new THREE.Group();
-    const cloudMat = new THREE.MeshBasicMaterial({
-      color: 0xf7f5ef,
-      transparent: true,
-      opacity: 0.72,
-      depthWrite: false,
-    });
     // Deterministic layered cloud slabs at y = 118
     const coords = [
       [-60, -40, 26, 14], [10, -55, 32, 16], [70, -25, 22, 12],
@@ -307,7 +342,7 @@ export class Renderer {
       [-95, -75, 24, 14], [65, -80, 28, 14],
     ];
     for (const [cx, cz, w, d] of coords) {
-      const m = new THREE.Mesh(new THREE.BoxGeometry(w, 2.4, d), cloudMat);
+      const m = new THREE.Mesh(new THREE.BoxGeometry(w, 2.4, d), this.cloudMat);
       m.position.set(cx, 118, cz);
       group.add(m);
     }
@@ -325,11 +360,13 @@ export class Renderer {
     this.camera.updateProjectionMatrix();
   }
 
-  setCamera(pos: Vec3, yaw: number, pitch: number): void {
-    this.camera.position.set(pos.x, pos.y, pos.z);
+  setCamera(pos: Vec3, yaw: number, pitch: number, applyWalkBob = false): void {
+    const bobY = applyWalkBob ? Math.abs(Math.sin(this.bobPhase)) * 0.042 * this.bobStrength : 0;
+    const bobRoll = applyWalkBob ? Math.cos(this.bobPhase) * 0.008 * this.bobStrength : 0;
+    this.camera.position.set(pos.x, pos.y + bobY, pos.z);
     this.camera.rotation.y = yaw;
     this.camera.rotation.x = pitch;
-    this.camera.rotation.z = 0;
+    this.camera.rotation.z = bobRoll;
   }
 
   setHandVisible(visible: boolean): void {
@@ -341,17 +378,21 @@ export class Renderer {
       this.handItemMesh.visible = false;
       return;
     }
-    const dataUrl = this.atlas.getItemIcon(iconKey);
-    const img = new Image();
-    img.src = dataUrl;
-    const tex = new THREE.Texture(img);
-    tex.magFilter = THREE.NearestFilter;
-    tex.minFilter = THREE.NearestFilter;
-    tex.colorSpace = THREE.SRGBColorSpace;
-    img.onload = () => {
-      tex.needsUpdate = true;
-    };
-    if (this.handItemMat.map) this.handItemMat.map.dispose();
+    let tex = this.iconTextureCache.get(iconKey);
+    if (!tex) {
+      const dataUrl = this.atlas.getItemIcon(iconKey);
+      const img = new Image();
+      img.src = dataUrl;
+      tex = new THREE.Texture(img);
+      tex.magFilter = THREE.NearestFilter;
+      tex.minFilter = THREE.NearestFilter;
+      tex.colorSpace = THREE.SRGBColorSpace;
+      const createdTex = tex;
+      img.onload = () => {
+        createdTex.needsUpdate = true;
+      };
+      this.iconTextureCache.set(iconKey, tex);
+    }
     this.handItemMat.map = tex;
     this.handItemMat.needsUpdate = true;
     this.handItemMesh.visible = true;
@@ -362,15 +403,18 @@ export class Renderer {
   }
 
   updateHandAnimation(dt: number, moveSpeed: number, onGround: boolean): void {
-    if (!this.handGroup.visible) return;
-    if (onGround && moveSpeed > 0.2) {
-      this.bobPhase += dt * Math.min(moveSpeed * 2.2, 12);
+    const targetStrength = onGround && moveSpeed > 0.25 ? Math.min(moveSpeed / 4.2, 1) : 0;
+    this.bobStrength += (targetStrength - this.bobStrength) * Math.min(1, dt * 10);
+    if (this.bobStrength > 0.01) {
+      this.bobPhase += dt * Math.min(Math.max(moveSpeed, 1.5) * 2.1, 11);
     }
-    const bobX = Math.cos(this.bobPhase) * 0.022 * Math.min(moveSpeed / 4, 1);
-    const bobY = Math.abs(Math.sin(this.bobPhase)) * 0.028 * Math.min(moveSpeed / 4, 1);
+
+    if (!this.handGroup.visible) return;
+    const bobX = Math.cos(this.bobPhase) * 0.024 * this.bobStrength;
+    const bobY = Math.abs(Math.sin(this.bobPhase)) * 0.03 * this.bobStrength;
 
     if (this.swingTime > 0) {
-      this.swingTime = Math.max(0, this.swingTime - dt * 4.5);
+      this.swingTime = Math.max(0, this.swingTime - dt * 4.8);
     }
     const swing = Math.sin(this.swingTime * Math.PI);
     this.handGroup.position.set(0.42 + bobX - swing * 0.14, -0.38 - bobY - swing * 0.08, -0.62 - swing * 0.12);
@@ -425,40 +469,32 @@ export class Renderer {
     const cloudOffset = ((worldTime * 0.025) % 200) - 100;
     this.cloudsGroup.position.x = cloudOffset;
 
-    // Sky & lighting color curves (zenith + horizon gradient + fog matched to horizon)
-    const dayZenith = new THREE.Color(0x4b8ec9);
-    const dayHorizon = new THREE.Color(0xa6cfe9);
-    const duskZenith = new THREE.Color(0x3a3b6e);
-    const duskHorizon = new THREE.Color(0xe37c46);
-    const nightZenith = new THREE.Color(0x060a16);
-    const nightHorizon = new THREE.Color(0x111a30);
-    const waterFog = new THREE.Color(0x1f5678);
-
-    const zenithColor = new THREE.Color();
-    const horizonColor = new THREE.Color();
-    const skyLight = new THREE.Color();
+    // Sky & lighting color curves (zenith + horizon gradient + fog matched to horizon, zero allocations)
+    const zenithColor = this.scratchZenith;
+    const horizonColor = this.scratchHorizon;
+    const skyLight = this.scratchSkyLight;
 
     if (sunHeight >= 0.25) {
-      zenithColor.copy(dayZenith);
-      horizonColor.copy(dayHorizon);
-      skyLight.setRGB(1.0, 0.99, 0.96);
+      zenithColor.copy(this.colDayZenith);
+      horizonColor.copy(this.colDayHorizon);
+      skyLight.copy(this.colDaySkyLight);
     } else if (sunHeight >= -0.18) {
       const t = (sunHeight + 0.18) / 0.43; // 0 at night, 0.5 at sunset peak, 1 at day
       if (t >= 0.5) {
         const k = (t - 0.5) * 2;
-        zenithColor.copy(duskZenith).lerp(dayZenith, k);
-        horizonColor.copy(duskHorizon).lerp(dayHorizon, k);
-        skyLight.setRGB(0.96, 0.56, 0.34).lerp(new THREE.Color(1.0, 0.99, 0.96), k);
+        zenithColor.copy(this.colDuskZenith).lerp(this.colDayZenith, k);
+        horizonColor.copy(this.colDuskHorizon).lerp(this.colDayHorizon, k);
+        skyLight.copy(this.colDuskSkyLight).lerp(this.colDaySkyLight, k);
       } else {
         const k = t * 2;
-        zenithColor.copy(nightZenith).lerp(duskZenith, k);
-        horizonColor.copy(nightHorizon).lerp(duskHorizon, k);
-        skyLight.setRGB(0.06, 0.08, 0.16).lerp(new THREE.Color(0.96, 0.56, 0.34), k);
+        zenithColor.copy(this.colNightZenith).lerp(this.colDuskZenith, k);
+        horizonColor.copy(this.colNightHorizon).lerp(this.colDuskHorizon, k);
+        skyLight.copy(this.colNightSkyLight).lerp(this.colDuskSkyLight, k);
       }
     } else {
-      zenithColor.copy(nightZenith);
-      horizonColor.copy(nightHorizon);
-      skyLight.setRGB(0.06, 0.08, 0.16);
+      zenithColor.copy(this.colNightZenith);
+      horizonColor.copy(this.colNightHorizon);
+      skyLight.copy(this.colNightSkyLight);
     }
 
     // Star opacity fades smoothly in during dusk -> night
@@ -466,14 +502,14 @@ export class Renderer {
 
     const viewDistBlocks = Math.max(3, renderDistance) * CHUNK_SIZE;
     if (underwater) {
-      this.scene.background = waterFog;
-      this.skyDomeMat.uniforms.uZenithColor.value.copy(waterFog);
-      this.skyDomeMat.uniforms.uHorizonColor.value.copy(waterFog);
-      this.sharedUniforms.uFogColor.value.copy(waterFog);
+      this.bgColor.copy(this.colWaterFog);
+      this.skyDomeMat.uniforms.uZenithColor.value.copy(this.colWaterFog);
+      this.skyDomeMat.uniforms.uHorizonColor.value.copy(this.colWaterFog);
+      this.sharedUniforms.uFogColor.value.copy(this.colWaterFog);
       this.sharedUniforms.uFogNear.value = 2;
       this.sharedUniforms.uFogFar.value = 26;
     } else {
-      this.scene.background = horizonColor;
+      this.bgColor.copy(horizonColor);
       this.skyDomeMat.uniforms.uZenithColor.value.copy(zenithColor);
       this.skyDomeMat.uniforms.uHorizonColor.value.copy(horizonColor);
       this.sharedUniforms.uFogColor.value.copy(horizonColor);
@@ -491,13 +527,9 @@ export class Renderer {
     this.sunLight.intensity = Math.max(0.05, sunHeight) * 0.9;
     this.sunLight.position.set(Math.cos(angle) * 60, Math.sin(angle) * 60 + 20, -20);
 
-    // Tint clouds by daylight
+    // Tint shared cloud material by daylight (O(1))
     const cloudBright = 0.18 + daylightScalar * 0.82;
-    this.cloudsGroup.children.forEach((child) => {
-      const mesh = child as THREE.Mesh;
-      const mat = mesh.material as THREE.MeshBasicMaterial;
-      mat.color.setRGB(cloudBright, cloudBright * 0.98, cloudBright * 0.96);
-    });
+    this.cloudMat.color.setRGB(cloudBright, cloudBright * 0.98, cloudBright * 0.96);
   }
 
   private createBufferGeometry(buf: MeshBuffers): THREE.BufferGeometry | null {
@@ -508,7 +540,8 @@ export class Renderer {
     geo.setAttribute('uv', new THREE.BufferAttribute(buf.uvs, 2));
     geo.setAttribute('color', new THREE.BufferAttribute(buf.colors, 3));
     geo.setIndex(new THREE.BufferAttribute(buf.indices, 1));
-    geo.computeBoundingSphere();
+    // Exact conservative local chunk bounding sphere [0..16, 0..128, 0..16] avoids O(N vertices) CPU scan on upload
+    geo.boundingSphere = new THREE.Sphere(new THREE.Vector3(8, 64, 8), 65.5);
     return geo;
   }
 
@@ -587,6 +620,11 @@ export class Renderer {
   dispose(): void {
     window.removeEventListener('resize', this.onResize);
     this.clearAllChunks();
+    for (const tex of this.iconTextureCache.values()) {
+      tex.dispose();
+    }
+    this.iconTextureCache.clear();
+    this.cloudMat.dispose();
     this.opaqueMat.dispose();
     this.cutoutMat.dispose();
     this.translucentMat.dispose();

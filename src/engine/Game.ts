@@ -46,10 +46,13 @@ import { GravityBlockSystem } from '../world/GravityBlocks';
 import { initializeChunkLight, propagateCrossChunkLight, updateLightingAt } from '../world/Lighting';
 import { extractNeighborSlices } from '../world/Mesher';
 import { findSafeSpawn, TerrainGenerator } from '../world/TerrainGenerator';
-import { findNearestVillage, getVillageChestsInChunk } from '../world/VillageGenerator';
+import { findNearestVillage } from '../world/VillageGenerator';
 import { WaterFlowSystem } from '../world/WaterFlow';
 import { World } from '../world/World';
+import { ChunkMeshData } from '../world/worker/protocol';
+import { AudioEngine } from './AudioEngine';
 import { InputManager } from './InputManager';
+import { ParticleSystem } from './ParticleSystem';
 import { Renderer } from './Renderer';
 import { WorldWorkerClient } from './WorldWorkerClient';
 
@@ -58,6 +61,8 @@ export class Game {
   readonly entities: EntitySystem;
   readonly renderer: Renderer;
   readonly entityRenderer: EntityRenderer;
+  readonly audio: AudioEngine;
+  readonly particles: ParticleSystem;
   readonly input: InputManager;
   readonly gravityBlocks = new GravityBlockSystem();
   readonly waterFlow = new WaterFlowSystem();
@@ -88,15 +93,32 @@ export class Game {
   private savedChunksCache = new Map<string, SerializedChunk>();
   private lastAutoSaveMs = 0;
   private saveInProgress = false;
+  private footstepDistAccum = 0;
+  private prevInWater = false;
+  private digEffectTimer = 0;
 
-  // Chunk streaming state
+  // Chunk streaming & budgeted integration state
   private readonly inflightGen = new Set<string>();
   private readonly inflightMesh = new Set<string>();
   private readonly remeshAgainAfterInflight = new Set<string>();
   private readonly priorityRemeshQueue: Array<{ cx: number; cz: number }> = [];
   private readonly remeshQueue: Array<{ cx: number; cz: number }> = [];
   private readonly remeshQueuedSet = new Set<string>();
-  private readonly maxInflightGen = 4;
+  private readonly completedGenQueue: Array<{
+    cx: number;
+    cz: number;
+    chunk: Chunk;
+    mesh: ChunkMeshData;
+    villageChests: Array<{ x: number; y: number; z: number; lootSeed: number }>;
+  }> = [];
+  private readonly completedGenSet = new Set<string>();
+  private readonly completedMeshQueue: Array<{ cx: number; cz: number; mesh: ChunkMeshData; priority: boolean }> = [];
+  private cachedSpiralRadius = -1;
+  private cachedSpiralOffsets: Array<{ dx: number; dz: number; d2: number }> = [];
+  private lastUnloadPcx = Number.NaN;
+  private lastUnloadPcz = Number.NaN;
+  private lastUnloadRadius = -1;
+  private readonly maxInflightGen = 6;
   private readonly maxInflightMesh = 4;
 
   // Timing & perf stats
@@ -123,6 +145,9 @@ export class Game {
     this.renderer = new Renderer(canvas, this.settings.fov);
     this.renderer.setHandVisible(startDirect);
     this.entityRenderer = new EntityRenderer(this.renderer.entityGroup, this.renderer.atlas);
+    this.audio = new AudioEngine(this.events);
+    this.audio.setVolume(this.settings.volume);
+    this.particles = new ParticleSystem(this.renderer.scene, this.events);
     this.input = new InputManager(canvas);
     this.worker = new WorldWorkerClient(seedNum);
 
@@ -180,10 +205,12 @@ export class Game {
     this.renderVitals();
 
     canvas.addEventListener('click', () => {
+      this.audio.unlock();
       if (this.mode === 'playing' && !this.inventoryUI.isOpen() && !this.input.isPointerLocked()) {
         this.input.requestPointerLock();
       }
     });
+    window.addEventListener('keydown', () => this.audio.unlock(), { once: true });
 
     this.events.on('chunk:dirty', ({ cx, cz }) => {
       this.enqueueRemesh(cx, cz, true);
@@ -215,6 +242,7 @@ export class Game {
   applySettings(partial: Partial<GameSettings>, persist = true): void {
     this.settings = sanitizeSettings({ ...this.settings, ...partial });
     this.renderer.setFov(this.settings.fov);
+    this.audio.setVolume(this.settings.volume);
     this.menus.updateSettingsValues(this.settings);
     if (persist) {
       void this.saveManager.saveSettings(this.settings);
@@ -296,6 +324,7 @@ export class Game {
     this.world.clear();
     this.entities.clear();
     this.entityRenderer.clear();
+    this.particles.clear();
     this.containers.clear();
     this.inventoryUI.close();
     this.renderer.clearAllChunks();
@@ -305,6 +334,14 @@ export class Game {
     this.priorityRemeshQueue.length = 0;
     this.remeshQueue.length = 0;
     this.remeshQueuedSet.clear();
+    this.completedGenQueue.length = 0;
+    this.completedGenSet.clear();
+    this.completedMeshQueue.length = 0;
+    this.lastUnloadPcx = Number.NaN;
+    this.lastUnloadPcz = Number.NaN;
+    this.lastUnloadRadius = -1;
+    this.prevInWater = false;
+    this.footstepDistAccum = 0;
 
     this.world = new World(seed, this.events);
     this.terrainSampler = new TerrainGenerator(seed);
@@ -457,8 +494,9 @@ export class Game {
         steps++;
       }
 
+      this.drainCompletedWorkerResults(jsStart);
       this.streamChunks();
-      this.processRemeshQueue();
+      this.processRemeshQueue(jsStart);
 
       const eye =
         this.mode === 'menu'
@@ -466,13 +504,17 @@ export class Game {
           : this.player.getEyePosition();
       const camYaw = this.mode === 'menu' ? (now * 0.00012) % (Math.PI * 2) : this.player.yaw;
       const camPitch = this.mode === 'menu' ? -0.34 : this.player.pitch;
-      this.renderer.setCamera(eye, camYaw, camPitch);
+      const horizSpeed = Math.hypot(this.player.vel.x, this.player.vel.z);
+      this.renderer.updateHandAnimation(rawDt, horizSpeed, this.player.onGround && !this.player.flying);
+      this.renderer.setCamera(eye, camYaw, camPitch, this.mode === 'playing' && !this.player.flying);
       this.renderer.updateEnvironment(
         this.worldTime,
         this.settings.renderDistance,
         eye,
         this.mode !== 'menu' && this.player.headInWater
       );
+
+      this.particles.update(rawDt);
 
       const allEnts = this.entities.all();
       this.entityRenderer.sync(allEnts, now / 1000, (e) => {
@@ -487,9 +529,6 @@ export class Game {
           if (obj) animateMobVisual(e, obj);
         }
       }
-
-      const horizSpeed = Math.hypot(this.player.vel.x, this.player.vel.z);
-      this.renderer.updateHandAnimation(rawDt, horizSpeed, this.player.onGround);
 
       // Update HUD screen overlays (hurt flash, underwater tint, toast timers)
       this.hud.updateEffects(this.player);
@@ -655,6 +694,7 @@ export class Game {
           const rem = this.player.inventory.addStack(s);
           this.syncHeldItemVisual();
           this.renderHotbar();
+          this.events.emit('sound:play', { name: 'pickup', volume: 0.5 });
           this.events.emit('inventory:changed', {});
           return rem;
         },
@@ -713,6 +753,7 @@ export class Game {
     this.entities.add(arrow);
     this.player.inventory.damageSelectedTool(1);
     this.renderer.triggerHandSwing();
+    this.events.emit('sound:play', { name: 'bow', volume: 0.8 });
     this.syncHeldItemVisual();
     this.renderHotbar();
     return true;
@@ -930,6 +971,28 @@ export class Game {
     this.survival.tick(this.player, stepRes, jumped, dt, this.events, {
       onPlayerDied: (cause) => this.handlePlayerDeath(cause),
     });
+
+    // Procedural footsteps & water splash particles/audio
+    if (!this.player.flying && !this.player.dead) {
+      if (!this.prevInWater && this.player.inWater) {
+        this.events.emit('sound:play', { name: 'splash', volume: 0.78 });
+        this.events.emit('particles:burst', {
+          pos: { x: this.player.pos.x, y: this.player.pos.y + 0.55, z: this.player.pos.z },
+          kind: 'splash',
+          count: 14,
+        });
+      }
+      this.prevInWater = this.player.inWater;
+
+      if (this.player.onGround && !this.player.inWater && stepRes.horizontalDistance > 0.001) {
+        this.footstepDistAccum += stepRes.horizontalDistance;
+        if (this.footstepDistAccum >= 1.75) {
+          this.footstepDistAccum = 0;
+          this.events.emit('sound:play', { name: 'step', volume: this.player.sneaking ? 0.16 : 0.42 });
+        }
+      }
+    }
+
     if (this.player.dead) {
       this.input.clearPressedFrame();
       return;
@@ -1043,9 +1106,27 @@ export class Game {
       this.player.mining.blockId = hit.blockId;
       this.player.mining.elapsedSec = 0;
       this.player.mining.requiredSec = this.computeBreakTime(hit.blockId);
+      this.digEffectTimer = 0.16;
     }
 
     this.player.mining.elapsedSec += dt;
+    this.digEffectTimer += dt;
+    if (this.digEffectTimer >= 0.22 && this.player.mining.elapsedSec < this.player.mining.requiredSec) {
+      this.digEffectTimer = 0;
+      this.renderer.triggerHandSwing();
+      this.events.emit('sound:play', { name: 'dig', volume: 0.55 });
+      this.events.emit('particles:burst', {
+        pos: {
+          x: hit.pos.x + 0.5 + hit.normal.x * 0.52,
+          y: hit.pos.y + 0.5 + hit.normal.y * 0.52,
+          z: hit.pos.z + 0.5 + hit.normal.z * 0.52,
+        },
+        blockId: hit.blockId,
+        kind: 'dig',
+        count: 4,
+      });
+    }
+
     if (this.player.mining.elapsedSec >= this.player.mining.requiredSec) {
       const brokenId = hit.blockId;
       const brokenPos = { ...hit.pos };
@@ -1064,6 +1145,13 @@ export class Game {
 
       this.world.setBlock(brokenPos.x, brokenPos.y, brokenPos.z, BlockId.Air);
       this.renderer.triggerHandSwing();
+      this.events.emit('sound:play', { name: 'break', volume: 0.85 });
+      this.events.emit('particles:burst', {
+        pos: { x: brokenPos.x + 0.5, y: brokenPos.y + 0.5, z: brokenPos.z + 0.5 },
+        blockId: brokenId,
+        kind: 'break',
+        count: 14,
+      });
       this.player.resetMining();
       this.survival.addMiningExhaustion();
 
@@ -1180,6 +1268,7 @@ export class Game {
         if (this.world.getBlock(hit.pos.x, baseY + 1, hit.pos.z) === BlockId.WoodDoorTop) {
           this.world.setMeta(hit.pos.x, baseY + 1, hit.pos.z, nextMeta);
         }
+        this.events.emit('sound:play', { name: 'door', volume: 0.65 });
         return true;
       }
     }
@@ -1192,6 +1281,7 @@ export class Game {
       if (this.farming.tillSoil(this.world, hit.pos.x, hit.pos.y, hit.pos.z)) {
         this.player.inventory.damageSelectedTool(1);
         this.renderer.triggerHandSwing();
+        this.events.emit('sound:play', { name: 'dig', volume: 0.65 });
         this.syncHeldItemVisual();
         this.renderHotbar();
         return true;
@@ -1203,6 +1293,7 @@ export class Game {
       if (this.farming.applyBonemeal(this.world, hit.pos.x, hit.pos.y, hit.pos.z)) {
         this.player.inventory.consumeSelected(1);
         this.renderer.triggerHandSwing();
+        this.events.emit('sound:play', { name: 'craft', volume: 0.55 });
         this.syncHeldItemVisual();
         this.renderHotbar();
         return true;
@@ -1213,6 +1304,7 @@ export class Game {
     if (heldDef?.foodRestore && this.player.hunger < this.player.maxHunger) {
       if (this.survival.eatSelectedFood(this.player, this.events)) {
         this.renderer.triggerHandSwing();
+        this.events.emit('sound:play', { name: 'eat', volume: 0.72 });
         this.syncHeldItemVisual();
         this.renderHotbar();
         this.renderVitals();
@@ -1274,6 +1366,7 @@ export class Game {
         this.containers.getOrCreateChest(targetPos.x, targetPos.y, targetPos.z);
       }
       this.renderer.triggerHandSwing();
+      this.events.emit('sound:play', { name: 'place', volume: 0.72 });
       this.syncHeldItemVisual();
       this.renderHotbar();
       this.events.emit('inventory:changed', {});
@@ -1372,56 +1465,135 @@ export class Game {
     this.hud.renderHotbar(this.player);
   }
 
+  private getSpiralOffsets(radius: number): Array<{ dx: number; dz: number; d2: number }> {
+    if (this.cachedSpiralRadius === radius) return this.cachedSpiralOffsets;
+    const radiusSq = radius * radius;
+    const offsets: Array<{ dx: number; dz: number; d2: number }> = [];
+    for (let dz = -radius; dz <= radius; dz++) {
+      for (let dx = -radius; dx <= radius; dx++) {
+        const d2 = dx * dx + dz * dz;
+        if (d2 <= radiusSq) offsets.push({ dx, dz, d2 });
+      }
+    }
+    offsets.sort((a, b) => a.d2 - b.d2);
+    this.cachedSpiralRadius = radius;
+    this.cachedSpiralOffsets = offsets;
+    return offsets;
+  }
+
+  private drainCompletedWorkerResults(jsStart: number): void {
+    const budgetMs = 2.6;
+
+    // 1. Always upload priority player-edit meshes immediately (zero latency for digging/placing/torches)
+    let nonPriorityUploaded = 0;
+    for (let i = 0; i < this.completedMeshQueue.length; ) {
+      const item = this.completedMeshQueue[i];
+      if (!item.priority) {
+        if (nonPriorityUploaded >= 2 || performance.now() - jsStart >= budgetMs) {
+          i++;
+          continue;
+        }
+        nonPriorityUploaded++;
+      }
+      this.completedMeshQueue.splice(i, 1);
+      if (this.world.hasChunk(item.cx, item.cz)) {
+        this.renderer.setChunkMesh(item.cx, item.cz, item.mesh);
+      }
+    }
+
+    // 2. Time-slice newly generated chunk integration (world insert + cross-chunk light + initial upload)
+    const radius = Math.max(2, Math.min(12, Math.round(this.settings.renderDistance)));
+    const unloadRadiusSq = (radius + 2) * (radius + 2);
+    const curPcx = worldToChunkCoord(this.player.pos.x);
+    const curPcz = worldToChunkCoord(this.player.pos.z);
+
+    let integrated = 0;
+    while (this.completedGenQueue.length > 0 && integrated < 4) {
+      if (integrated > 0 && performance.now() - jsStart >= budgetMs) break;
+      const item = this.completedGenQueue.shift()!;
+      const k = chunkKey(item.cx, item.cz);
+      this.completedGenSet.delete(k);
+      if ((item.cx - curPcx) ** 2 + (item.cz - curPcz) ** 2 > unloadRadiusSq) continue;
+
+      const lateSaved = this.savedChunksCache.get(k);
+      if (lateSaved) {
+        const restored = Chunk.deserialize(lateSaved);
+        initializeChunkLight(restored);
+        this.world.setChunk(restored);
+        propagateCrossChunkLight(this.world, item.cx, item.cz);
+        this.enqueueRemesh(item.cx, item.cz, true);
+        integrated++;
+        continue;
+      }
+
+      this.world.setChunk(item.chunk);
+      for (const vc of item.villageChests) {
+        this.containers.registerVillageChest(vc.x, vc.y, vc.z, vc.lootSeed);
+      }
+      propagateCrossChunkLight(this.world, item.cx, item.cz);
+      this.renderer.setChunkMesh(item.cx, item.cz, item.mesh);
+
+      // Deduplicated seam-culling remesh queued once neighbors arrive
+      this.enqueueRemesh(item.cx, item.cz);
+      this.enqueueRemesh(item.cx + 1, item.cz);
+      this.enqueueRemesh(item.cx - 1, item.cz);
+      this.enqueueRemesh(item.cx, item.cz + 1);
+      this.enqueueRemesh(item.cx, item.cz - 1);
+      integrated++;
+    }
+  }
+
   private streamChunks(): void {
     const pcx = worldToChunkCoord(this.player.pos.x);
     const pcz = worldToChunkCoord(this.player.pos.z);
     const radius = Math.max(2, Math.min(12, Math.round(this.settings.renderDistance)));
-    const radiusSq = radius * radius;
     const unloadRadiusSq = (radius + 2) * (radius + 2);
 
-    for (const { cx, cz } of this.world.getLoadedChunkCoords()) {
-      const dx = cx - pcx;
-      const dz = cz - pcz;
-      if (dx * dx + dz * dz > unloadRadiusSq) {
-        const chunk = this.world.getChunk(cx, cz);
-        if (chunk?.modified) {
-          this.savedChunksCache.set(chunkKey(cx, cz), chunk.serialize());
+    // Only scan for unloading when player crosses a chunk boundary or changes render distance
+    if (pcx !== this.lastUnloadPcx || pcz !== this.lastUnloadPcz || radius !== this.lastUnloadRadius) {
+      this.lastUnloadPcx = pcx;
+      this.lastUnloadPcz = pcz;
+      this.lastUnloadRadius = radius;
+      for (const { cx, cz } of this.world.getLoadedChunkCoords()) {
+        const dx = cx - pcx;
+        const dz = cz - pcz;
+        if (dx * dx + dz * dz > unloadRadiusSq) {
+          const chunk = this.world.getChunk(cx, cz);
+          if (chunk?.modified) {
+            this.savedChunksCache.set(chunkKey(cx, cz), chunk.serialize());
+          }
+          this.world.unloadChunk(cx, cz);
+          this.renderer.removeChunkMesh(cx, cz);
         }
-        this.world.unloadChunk(cx, cz);
-        this.renderer.removeChunkMesh(cx, cz);
       }
     }
 
-    if (this.inflightGen.size >= this.maxInflightGen) return;
+    if (this.inflightGen.size >= this.maxInflightGen && this.savedChunksCache.size === 0) return;
 
-    const candidates: Array<{ cx: number; cz: number; d2: number }> = [];
-    for (let dz = -radius; dz <= radius; dz++) {
-      for (let dx = -radius; dx <= radius; dx++) {
-        const d2 = dx * dx + dz * dz;
-        if (d2 > radiusSq) continue;
-        const cx = pcx + dx;
-        const cz = pcz + dz;
-        const k = chunkKey(cx, cz);
-        if (this.world.hasChunk(cx, cz) || this.inflightGen.has(k)) continue;
-        candidates.push({ cx, cz, d2 });
-      }
-    }
-    candidates.sort((a, b) => a.d2 - b.d2);
+    const spiral = this.getSpiralOffsets(radius);
+    let savedRestored = 0;
 
-    for (const cand of candidates) {
-      const k = chunkKey(cand.cx, cand.cz);
-      // Restore previously saved modified chunk immediately instead of overwriting with fresh terrain!
+    for (let i = 0; i < spiral.length; i++) {
+      const off = spiral[i];
+      const cx = pcx + off.dx;
+      const cz = pcz + off.dz;
+      const k = chunkKey(cx, cz);
+      if (this.world.hasChunk(cx, cz) || this.inflightGen.has(k) || this.completedGenSet.has(k)) continue;
+
+      // Restore previously saved modified chunk immediately instead of overwriting with fresh terrain
       const saved = this.savedChunksCache.get(k);
       if (saved) {
+        if (savedRestored >= 4) continue;
         const chunk = Chunk.deserialize(saved);
         initializeChunkLight(chunk);
         this.world.setChunk(chunk);
-        propagateCrossChunkLight(this.world, cand.cx, cand.cz);
-        this.enqueueRemesh(cand.cx, cand.cz, true);
-        this.enqueueRemesh(cand.cx + 1, cand.cz);
-        this.enqueueRemesh(cand.cx - 1, cand.cz);
-        this.enqueueRemesh(cand.cx, cand.cz + 1);
-        this.enqueueRemesh(cand.cx, cand.cz - 1);
+        propagateCrossChunkLight(this.world, cx, cz);
+        this.enqueueRemesh(cx, cz, true);
+        this.enqueueRemesh(cx + 1, cz);
+        this.enqueueRemesh(cx - 1, cz);
+        this.enqueueRemesh(cx, cz + 1);
+        this.enqueueRemesh(cx, cz - 1);
+        savedRestored++;
         continue;
       }
 
@@ -1430,45 +1602,14 @@ export class Game {
       const genWorld = this.world;
 
       this.worker
-        .generateChunk(cand.cx, cand.cz)
-        .then(({ chunk, mesh }) => {
+        .generateChunk(cx, cz)
+        .then(({ chunk, mesh, villageChests }) => {
           this.inflightGen.delete(k);
           if (this.disposed || this.world !== genWorld) return;
-
-          const curPcx = worldToChunkCoord(this.player.pos.x);
-          const curPcz = worldToChunkCoord(this.player.pos.z);
-          if ((cand.cx - curPcx) ** 2 + (cand.cz - curPcz) ** 2 > unloadRadiusSq) return;
-
-          // If saved cache was hydrated while worker ran, prefer saved version
-          const lateSaved = this.savedChunksCache.get(k);
-          if (lateSaved) {
-            const restored = Chunk.deserialize(lateSaved);
-            initializeChunkLight(restored);
-            this.world.setChunk(restored);
-            propagateCrossChunkLight(this.world, cand.cx, cand.cz);
-            this.enqueueRemesh(cand.cx, cand.cz, true);
-            return;
+          if (!this.completedGenSet.has(k)) {
+            this.completedGenSet.add(k);
+            this.completedGenQueue.push({ cx, cz, chunk, mesh, villageChests });
           }
-
-          this.world.setChunk(chunk);
-          const villageChests = getVillageChestsInChunk(
-            cand.cx,
-            cand.cz,
-            this.world.seed,
-            (x, z) => this.terrainSampler.sampleBiome(x, z),
-            (x, z) => this.terrainSampler.sampleHeight(x, z)
-          );
-          for (const vc of villageChests) {
-            this.containers.registerVillageChest(vc.x, vc.y, vc.z, vc.lootSeed);
-          }
-          propagateCrossChunkLight(this.world, cand.cx, cand.cz);
-          this.renderer.setChunkMesh(cand.cx, cand.cz, mesh);
-
-          this.enqueueRemesh(cand.cx, cand.cz);
-          this.enqueueRemesh(cand.cx + 1, cand.cz);
-          this.enqueueRemesh(cand.cx - 1, cand.cz);
-          this.enqueueRemesh(cand.cx, cand.cz + 1);
-          this.enqueueRemesh(cand.cx, cand.cz - 1);
         })
         .catch(() => {
           this.inflightGen.delete(k);
@@ -1476,15 +1617,21 @@ export class Game {
     }
   }
 
-  private processRemeshQueue(): void {
+  private processRemeshQueue(jsStart = performance.now()): void {
+    let backgroundDispatched = 0;
     while (
       (this.priorityRemeshQueue.length > 0 || this.remeshQueue.length > 0) &&
       this.inflightMesh.size < this.maxInflightMesh
     ) {
-      const next =
-        this.priorityRemeshQueue.length > 0
-          ? this.priorityRemeshQueue.shift()!
-          : this.remeshQueue.shift()!;
+      const isPriority = this.priorityRemeshQueue.length > 0;
+      if (!isPriority) {
+        // Prioritize finishing active terrain generation bursts first so chunks don't get seam-remeshed 4x!
+        if (this.inflightGen.size > 1 || this.completedGenQueue.length > 0) break;
+        if (backgroundDispatched >= 1 || performance.now() - jsStart >= 2.8) {
+          break;
+        }
+      }
+      const next = isPriority ? this.priorityRemeshQueue.shift()! : this.remeshQueue.shift()!;
       const k = chunkKey(next.cx, next.cz);
       this.remeshQueuedSet.delete(k);
 
@@ -1496,6 +1643,7 @@ export class Game {
       }
 
       this.inflightMesh.add(k);
+      if (!isPriority) backgroundDispatched++;
       const genWorld = this.world;
       const neighbors = extractNeighborSlices(this.world, next.cx, next.cz);
       chunk.dirty = false;
@@ -1505,7 +1653,7 @@ export class Game {
         .then((mesh) => {
           this.inflightMesh.delete(k);
           if (this.disposed || this.world !== genWorld || !this.world.hasChunk(next.cx, next.cz)) return;
-          this.renderer.setChunkMesh(next.cx, next.cz, mesh);
+          this.completedMeshQueue.push({ cx: next.cx, cz: next.cz, mesh, priority: isPriority });
           if (this.remeshAgainAfterInflight.has(k)) {
             this.remeshAgainAfterInflight.delete(k);
             this.enqueueRemesh(next.cx, next.cz, true);
@@ -1558,7 +1706,7 @@ export class Game {
       chunkMeshAvgMs: wStats.chunkMeshAvgMs,
       drawCalls: rStats.drawCalls,
       triangles: rStats.triangles,
-      loadedChunks: this.world.getLoadedChunkCoords().length,
+      loadedChunks: this.world.getLoadedChunkCount(),
     };
   }
 
@@ -1636,6 +1784,7 @@ export class Game {
           this.syncHeldItemVisual();
           this.renderHotbar();
           this.inventoryUI.refresh();
+          this.events.emit('sound:play', { name: 'craft', volume: 0.6 });
           this.events.emit('inventory:changed', {});
         }
         return ok;
@@ -1649,6 +1798,7 @@ export class Game {
           this.syncHeldItemVisual();
           this.renderHotbar();
           this.inventoryUI.refresh();
+          this.events.emit('sound:play', { name: 'ui', volume: 0.45 });
           this.events.emit('inventory:changed', {});
         }
         return ok;
@@ -1735,7 +1885,7 @@ export class Game {
           biomeName: BIOME_NAMES[biome],
           player: this.player.toSnapshot(),
           openContainer: this.getOpenContainerSnapshot(),
-          loadedChunks: this.world.getLoadedChunkCoords().length,
+          loadedChunks: this.world.getLoadedChunkCount(),
         };
       },
       getInventory: (): InventorySnapshot => this.player.inventory.toSnapshot(),
@@ -1758,6 +1908,8 @@ export class Game {
     cancelAnimationFrame(this.rafId);
     this.inventoryUI.dispose();
     this.entityRenderer.dispose();
+    this.particles.dispose();
+    this.audio.dispose();
     this.input.dispose();
     this.worker.dispose();
     this.renderer.dispose();

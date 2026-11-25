@@ -2,7 +2,7 @@ import { CHUNK_SIZE, WORLD_HEIGHT } from '../config/constants';
 import { EventBus } from '../core/events';
 import { BiomeId, ChunkCoord } from '../core/types';
 import { BlockId, BlockRegistry } from '../registry/blocks';
-import { Chunk, chunkKey, worldToChunkCoord, worldToLocalCoord } from './Chunk';
+import { Chunk, worldToChunkCoord, worldToLocalCoord } from './Chunk';
 
 export interface IWorld {
   readonly seed: number;
@@ -20,10 +20,18 @@ export interface IWorld {
   getLoadedChunkCoords(): ChunkCoord[];
 }
 
+function chunkNumKey(cx: number, cz: number): number {
+  // Exact IEEE-754 safe integer (< 2^52 < Number.MAX_SAFE_INTEGER) for |cx|,|cz| < 33,554,432
+  return (cx + 33554432) * 67108864 + (cz + 33554432);
+}
+
 export class World implements IWorld {
   readonly seed: number;
   readonly events: EventBus;
-  private readonly chunks = new Map<string, Chunk>();
+  private readonly chunks = new Map<number, Chunk>();
+  private lastCx = Number.NaN;
+  private lastCz = Number.NaN;
+  private lastChunk: Chunk | undefined = undefined;
 
   constructor(seed: number, events: EventBus = new EventBus()) {
     this.seed = seed >>> 0;
@@ -31,28 +39,51 @@ export class World implements IWorld {
   }
 
   getChunk(cx: number, cz: number): Chunk | undefined {
-    return this.chunks.get(chunkKey(cx, cz));
+    if (cx === this.lastCx && cz === this.lastCz) return this.lastChunk;
+    const c = this.chunks.get(chunkNumKey(cx, cz));
+    if (c) {
+      this.lastCx = cx;
+      this.lastCz = cz;
+      this.lastChunk = c;
+    }
+    return c;
   }
 
   hasChunk(cx: number, cz: number): boolean {
-    return this.chunks.has(chunkKey(cx, cz));
+    if (cx === this.lastCx && cz === this.lastCz) return this.lastChunk !== undefined;
+    return this.chunks.has(chunkNumKey(cx, cz));
   }
 
   setChunk(chunk: Chunk): void {
-    this.chunks.set(chunkKey(chunk.cx, chunk.cz), chunk);
+    this.chunks.set(chunkNumKey(chunk.cx, chunk.cz), chunk);
+    this.lastCx = chunk.cx;
+    this.lastCz = chunk.cz;
+    this.lastChunk = chunk;
     this.events.emit('chunk:loaded', { cx: chunk.cx, cz: chunk.cz });
   }
 
   unloadChunk(cx: number, cz: number): void {
-    this.chunks.delete(chunkKey(cx, cz));
+    this.chunks.delete(chunkNumKey(cx, cz));
+    if (cx === this.lastCx && cz === this.lastCz) {
+      this.lastCx = Number.NaN;
+      this.lastCz = Number.NaN;
+      this.lastChunk = undefined;
+    }
   }
 
   clear(): void {
     this.chunks.clear();
+    this.lastCx = Number.NaN;
+    this.lastCz = Number.NaN;
+    this.lastChunk = undefined;
   }
 
   getLoadedChunks(): IterableIterator<Chunk> {
     return this.chunks.values();
+  }
+
+  getLoadedChunkCount(): number {
+    return this.chunks.size;
   }
 
   getLoadedChunkCoords(): ChunkCoord[] {

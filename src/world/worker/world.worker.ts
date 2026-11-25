@@ -1,6 +1,7 @@
 import { initializeChunkLight } from '../Lighting';
 import { buildChunkMesh } from '../Mesher';
 import { TerrainGenerator } from '../TerrainGenerator';
+import { getVillageChestsInChunk } from '../VillageGenerator';
 import {
   collectMeshTransferables,
   type WorkerRequest,
@@ -29,6 +30,13 @@ workerScope.onmessage = (event: MessageEvent<WorkerRequest>): void => {
 
         const t0 = performance.now();
         const chunk = generator.generateChunk(msg.cx, msg.cz);
+        const villageChests = getVillageChestsInChunk(
+          msg.cx,
+          msg.cz,
+          generator.seed,
+          (x, z) => generator!.sampleBiome(x, z),
+          (x, z) => generator!.sampleHeight(x, z)
+        );
         initializeChunkLight(chunk);
         const genMs = performance.now() - t0;
 
@@ -49,6 +57,8 @@ workerScope.onmessage = (event: MessageEvent<WorkerRequest>): void => {
           light: chunk.light,
           meta: chunk.meta,
           biomes: chunk.biomes,
+          hasFarmBlocks: chunk.hasFarmBlocks,
+          villageChests,
           mesh,
           genMs,
         };

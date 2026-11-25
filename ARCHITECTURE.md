@@ -82,8 +82,11 @@ This document defines the module boundaries, data structures, and public interfa
 | `src/engine/Game.ts` | Master controller: fixed-timestep simulation loop, worker pool bridge, state transitions, auto-save trigger. |
 | `src/storage/schema.ts` | Versioned IndexedDB save schemas (`CURRENT_SAVE_VERSION`) and pure migration pipeline. |
 | `src/storage/SaveManager.ts` | IndexedDB persistence for world metadata, modified chunks, player, containers, time, and user settings. |
-| `src/ui/*` | DOM-based Menus, HUD, Inventory/Workbench/Furnace/Chest UI, F3 Debug Overlay. |
-| `src/debug/DebugAPI.ts` | Exposes `window.__game` in dev/test builds with strict player-simulation operations + read-only telemetry. |
+| `src/ui/Menus.ts` | Main Menu (original SVG emblem, seed input, Continue World), Pause Menu, Settings Modal, Death Screen, save-migration banner. |
+| `src/ui/HUD.ts` | Crosshair, Hearts/Hunger/Armor/Oxygen pip bars, 9-slot Hotbar with durability bars, held-item & system toasts, hurt/underwater overlays. |
+| `src/ui/DebugOverlay.ts` | Toggleable `F3` telemetry overlay (FPS, JS frame ms, XYZ, chunk, facing, biome, sky/block light, draw calls, triangles, worker timings). |
+| `src/ui/InventoryUI.ts` | Interactive Inventory (2×2 crafting), Workbench (3×3 crafting), Furnace (fuel/smelt progress), and Chest UI with drag, right-click split, and Shift quick-transfer. |
+| `src/debug/DebugAPI.ts` | Exposes `window.__game` in dev/test builds (or `?debug=1`) with strict player-simulation operations + read-only telemetry. |
 
 ---
 
@@ -172,6 +175,8 @@ Events emitted across systems:
 - `container:opened` `{ type, pos }`
 - `container:closed` `{}`
 - `world:saved` `{ worldId, timestamp }`
+- `sound:play` `{ name, volume?, pitch? }`
+- `particles:burst` `{ pos, blockId?, color?, count?, kind? }`
 
 ### 3.5 `IGameDebugAPI` (`window.__game`, `src/debug/DebugAPI.ts`)
 Available in dev/test builds. Strictly simulates normal player actions — NEVER directly injects items into inventory:

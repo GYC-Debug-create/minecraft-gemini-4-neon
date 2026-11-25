@@ -4,13 +4,13 @@
 - **OS**: Windows
 - **Node.js**: `v22.23.5` (`C:\Users\Administrator\AppData\Local\pi-node\current\node.exe`)
 - **npm**: `10.9.9`
-- **GPU**: Intel(R) Iris(R) Xe Graphics
+- **GPU**: Intel(R) Iris(R) Xe Graphics (Direct3D11 ANGLE)
 - **Browser E2E**: Chromium (system Chrome via Playwright with `--use-gl=angle --use-angle=swiftshader --enable-unsafe-swiftshader`)
 - **Repository**: Git on branch `main`
 
 ## Current Milestone
-- **Active**: **M8 — Polish, Procedural Audio, Particles, Performance Optimization & Final Report**
-- **Status**: Starting M8 (M0–M7 completed, verified, and committed)
+- **Status**: **ALL MILESTONES (M0 – M8) COMPLETED & VERIFIED**
+- **Final Report**: [docs/FINAL_REPORT.md](docs/FINAL_REPORT.md)
 
 ## Milestone Status (M0 – M8)
 
@@ -23,20 +23,30 @@
 | **M4 Item System** | **DONE** | `npm run build`, `npm test` (24/24), `npm run e2e` (5/5), `docs/screenshots/M4-crafting.png`, commit `0895f33` |
 | **M5 Survival & Villages** | **DONE** | `npm run build`, `npm test` (27/27), `npm run e2e` (6/6), `docs/screenshots/M5-village.png`, commit `85be1ac` |
 | **M6 Mobs** | **DONE** | `npm run build`, `npm test` (31/31), `npm run e2e` (7/7), `docs/screenshots/M6-mobs.png`, commit `81f9974` |
-| **M7 UI & Saves** | **DONE** | `npm run build` (2.07s), `npm test` (33/33 incl. `storage.test.ts`: IndexedDB save/load + v1→v2 migration + corrupt fallback), `npm run e2e` (8/8 incl. `m7-ui-saves.spec.ts`: Main Menu, Settings persistence, terrain + inventory + chest full reload round-trip, F3 debug overlay), `docs/screenshots/M7-{main-menu,ui-save}.png` |
-| **M8 Polish** | **In Progress** | — |
+| **M7 UI & Saves** | **DONE** | `npm run build`, `npm test` (33/33), `npm run e2e` (8/8), `docs/screenshots/M7-{main-menu,ui-save}.png`, commit `37298ab` |
+| **M8 Polish & Perf** | **DONE** | `npm run docs:recipes`, `npm run build` (2.10s), `npm test` (35/35, 9 files), `npm run e2e` (9/9 single-pass M0–M8), `docs/screenshots/M8-final.png`, `docs/FINAL_REPORT.md` |
 
-## Completed Subtasks
-- **[M0–M6]** Core architecture, worker terrain/mesher/atlas, physics/raycast, lighting/sky/water, inventory/crafting/containers, survival/farming/villages, mobs/pathfinding/combat (`4b6779b`..`81f9974`).
-- **[M7.1]** Implemented `src/storage/schema.ts` & `src/storage/SaveManager.ts` (versioned IndexedDB `stoneroot-saves` storing worlds, modified chunks only, and settings + v1→v2 migration + non-crashing corrupt-save fallback + 30s auto-save & `beforeunload` save).
-- **[M7.2]** Implemented `src/ui/Menus.ts` (original Stoneroot SVG emblem Main Menu over live 3D rotating terrain, Seed input, Continue World, Pause Menu, Settings modal, Death screen), `src/ui/HUD.ts` (hearts, hunger, oxygen, armor, hotbar with durability & item toast, hurt/water overlays), and `src/ui/DebugOverlay.ts` (`F3` telemetry panel).
-- **[M7.3]** Added `tests/unit/storage.test.ts` (2 tests) & `tests/e2e/m7-ui-saves.spec.ts` (pass); visually verified `M7-main-menu.png` & `M7-ui-save.png`; full regression 33/33 unit + 8/8 E2E green.
+## Section 4 Measured Performance Metrics (Render Distance 8)
+
+Measured in `tests/e2e/m8-perf.spec.ts` (headless Chromium + SwiftShader) and hardware GPU verification on `Intel(R) Iris(R) Xe Graphics (Direct3D11)`:
+
+| Metric | Measured Value | Target (SPEC §4) | Status |
+|---|---|---|---|
+| Render Distance | `8` chunks (`197` loaded chunks) | `8` chunks | PASS |
+| Single Chunk Generation (Worker avg) | `11.91 ms` (post-crossing `13.84 ms`) | Off main thread | PASS |
+| Single Chunk Meshing (Worker avg) | `13.52 ms` (post-crossing `16.53 ms`) | Off main thread | PASS |
+| Draw Calls (RD 8) | `270` (`262–270` on real GPU) | Measured | PASS |
+| Triangles (RD 8) | `1,065,868` (`~798k–841k` on real GPU view) | Measured | PASS |
+| Main-Thread JS Frame Time — Steady Avg (excl. GPU) | **`0.94 ms`** (p95 `1.30 ms`, max `2.60 ms`) | `< 8.0 ms` | **PASS** |
+| Main-Thread JS Frame Time — Crossing 14 Chunk Borders | Avg **`2.77 ms`**, p95 `6.50 ms`, **Max `7.40 ms`** | Measured (`< 8 ms`) | **PASS** |
+| Software FPS (SwiftShader reference only) | `4–6 FPS` | Reference only | Recorded |
+| Real GPU FPS (`Intel(R) Iris(R) Xe Graphics` D3D11) | **`60 FPS`** locked (`0.18–0.65 ms` JS avg) | `≥ 55 FPS` | **PASS** |
+
+## Completed Subtasks (M8)
+- **[M8.1]** Implemented `src/engine/AudioEngine.ts` (13 procedural WebAudio SFX cues, volume control, rate-limiting, headless-safe degradation) and `src/engine/ParticleSystem.ts` (256-slot pooled single-draw-call `InstancedMesh` particles for mining chips, block breaks, water splashes, and embers) + unit tests in `tests/unit/audio_particles.test.ts`.
+- **[M8.2]** Polished first-person arm (forearm + olive tunic sleeve + wrist cuff), visual-only walk camera bobbing, cached item-icon textures, zero-allocation `updateEnvironment()` color math, and dirty-checked HUD vitals/overlays.
+- **[M8.3]** Profiled Render Distance 8 via `tests/e2e/m8-perf.spec.ts` and eliminated 4 main-thread bottlenecks (`FarmingSystem` `hasFarmBlocks` fast-skip, differential flat-array `propagateCrossChunkLight`, 52-bit integer `World` chunk keys, Worker-side `villageChests` + time-sliced Worker drain + constant chunk bounding sphere), cutting steady JS from `9.05ms → 0.94ms` and chunk-crossing max JS from `72.5ms → 7.40ms`.
+- **[M8.4]** Measured real Intel Iris Xe GPU FPS (`60 FPS` locked at RD 8), regenerated `README.md` crafting/smelting tables (`npm run docs:recipes`), updated `ARCHITECTURE.md` / `DECISIONS.md` / `ISSUES.md`, verified full single-pass `build` + `test` (35/35) + `e2e` (9/9), and wrote `docs/FINAL_REPORT.md`.
 
 ## Blockers
 - None.
-
-## Next Step (M8 — Polish, Audio, Particles, Performance & Final Report)
-1. Implement procedural WebAudio synthesizer (`src/engine/AudioEngine.ts`) and wire footsteps, dig, break, place, melee hit, hurt, bow twang, eat, splash, and UI sounds obeying Settings volume.
-2. Implement Three.js voxel particle bursts (`src/engine/ParticleSystem.ts`) for mining chips, block breaking, and water splashes, plus subtle first-person walk camera bob & hand polish.
-3. Build `tests/e2e/m8-perf.spec.ts` to benchmark SPEC §4 metrics at render distance 8 (chunk gen+mesh ms, draw calls, triangles, avg JS frame ms `< 8ms`, max chunk-crossing JS frame ms, plus real-GPU check if available) and optimize any hot paths so JS frame times stay smooth.
-4. Regenerate README crafting/smelting tables (`npm run docs:recipes`), update `ARCHITECTURE.md` & `README.md`, run full single-pass verification (`npm run build`, `npm test`, `npm run e2e`), write `docs/FINAL_REPORT.md`, and commit M8.
