@@ -9,8 +9,8 @@
 - **Repository**: Git on branch `main`
 
 ## Current Milestone
-- **Active**: **M7 — Menus, Settings, HUD, F3 Debug Overlay, & IndexedDB Saves**
-- **Status**: Starting M7 (M0–M6 completed, verified, and committed)
+- **Active**: **M8 — Polish, Procedural Audio, Particles, Performance Optimization & Final Report**
+- **Status**: Starting M8 (M0–M7 completed, verified, and committed)
 
 ## Milestone Status (M0 – M8)
 
@@ -22,31 +22,21 @@
 | **M3 Lighting & Sky** | **DONE** | `npm run build`, `npm test` (20/20), `npm run e2e` (4/4), `docs/screenshots/M3-{noon,dusk,midnight,cave-torch}.png`, commit `394b2b3` |
 | **M4 Item System** | **DONE** | `npm run build`, `npm test` (24/24), `npm run e2e` (5/5), `docs/screenshots/M4-crafting.png`, commit `0895f33` |
 | **M5 Survival & Villages** | **DONE** | `npm run build`, `npm test` (27/27), `npm run e2e` (6/6), `docs/screenshots/M5-village.png`, commit `85be1ac` |
-| **M6 Mobs** | **DONE** | `npm run build` (2.03s), `npm test` (31/31 incl. `mobs.test.ts`: spawn light >= 7 blocked, A* wall avoidance & maxNodes cap, i-frames/knockback/sunburn/drops), `npm run e2e` (7/7 incl. `m6-mobs.spec.ts`: midnight open-field spawn, Oak Blade combat kill+drop, player-built sealed 5×5 torch-lit hut survives full night w/ 0 interior spawns), `docs/screenshots/M6-mobs.png` |
-| **M7 UI & Saves** | **In Progress** | — |
-| **M8 Polish** | Pending | — |
+| **M6 Mobs** | **DONE** | `npm run build`, `npm test` (31/31), `npm run e2e` (7/7), `docs/screenshots/M6-mobs.png`, commit `81f9974` |
+| **M7 UI & Saves** | **DONE** | `npm run build` (2.07s), `npm test` (33/33 incl. `storage.test.ts`: IndexedDB save/load + v1→v2 migration + corrupt fallback), `npm run e2e` (8/8 incl. `m7-ui-saves.spec.ts`: Main Menu, Settings persistence, terrain + inventory + chest full reload round-trip, F3 debug overlay), `docs/screenshots/M7-{main-menu,ui-save}.png` |
+| **M8 Polish** | **In Progress** | — |
 
 ## Completed Subtasks
-- **[M0–M5]** Core architecture, worker terrain/mesher/atlas, physics/raycast, lighting/sky/water, inventory/crafting/containers, survival/farming/villages (`4b6779b`..`85be1ac`).
-- **[M6.1]** Implemented `src/entities/Pathfinding.ts` (bounded voxel grid A* with obstacle avoidance, 1-block step-up, safe drops, spider wall-climb, strict `maxNodes` cap).
-- **[M6.2]** Implemented `src/entities/Mob.ts` (3 passive: Meadow Boar, Woolhorn Ram, Crested Fowl; 3 hostile: Ash Husk, Hollow Archer with parabolic arrows, Gloom Spider wall-climbing & day-neutral/night-hostile; sunlight burning, knockback, i-frames, drops), `src/entities/MobSpawner.ts` (strict light threshold < 7 rule, despawn > 64), and `src/entities/MobRenderer.ts` (original procedural 3D articulated voxel models).
-- **[M6.3]** Integrated M6 into `src/engine/Game.ts`, fixed `attack()` tick isolation so mobs don't get extra AI ticks during player attack drop-settle, and verified `tests/unit/mobs.test.ts` (4/4) + `tests/e2e/m6-mobs.spec.ts` (pass, `docs/screenshots/M6-mobs.png`).
+- **[M0–M6]** Core architecture, worker terrain/mesher/atlas, physics/raycast, lighting/sky/water, inventory/crafting/containers, survival/farming/villages, mobs/pathfinding/combat (`4b6779b`..`81f9974`).
+- **[M7.1]** Implemented `src/storage/schema.ts` & `src/storage/SaveManager.ts` (versioned IndexedDB `stoneroot-saves` storing worlds, modified chunks only, and settings + v1→v2 migration + non-crashing corrupt-save fallback + 30s auto-save & `beforeunload` save).
+- **[M7.2]** Implemented `src/ui/Menus.ts` (original Stoneroot SVG emblem Main Menu over live 3D rotating terrain, Seed input, Continue World, Pause Menu, Settings modal, Death screen), `src/ui/HUD.ts` (hearts, hunger, oxygen, armor, hotbar with durability & item toast, hurt/water overlays), and `src/ui/DebugOverlay.ts` (`F3` telemetry panel).
+- **[M7.3]** Added `tests/unit/storage.test.ts` (2 tests) & `tests/e2e/m7-ui-saves.spec.ts` (pass); visually verified `M7-main-menu.png` & `M7-ui-save.png`; full regression 33/33 unit + 8/8 E2E green.
 
 ## Blockers
 - None.
 
-## Next Step (M7 — UI, Menus, Settings, F3, & IndexedDB Saves)
-1. Implement `src/storage/schema.ts` & `src/storage/SaveManager.ts`:
-   - Versioned IndexedDB persistence (`stoneroot-db`, `CURRENT_SAVE_VERSION = 2`):
-     - Stores: `worlds` (world metadata, seed, worldTime, player state, inventory, armor, spawnPoint, containers, schema version), `chunks` (keyed by `${worldId}:${cx},${cz}`, storing ONLY modified chunks with `blocks`, `meta`, `biomes`), `settings` (renderDistance, fov, mouseSensitivity, volume).
-     - Pure migration pipeline (`migrateWorldSave(raw)`) supporting v1 -> v2 cleanly; on unmigratable/corrupt future/unknown version returns `{ ok: false, reason }` so UI warns clearly and starts fresh without crashing!
-   - Auto-save every 30s + save on pause / quit / `beforeunload` / `window.__game.saveNow()`.
-   - When loading chunks from Worker on a continued world, overlay saved modified chunks from IndexedDB BEFORE lighting & meshing!
-2. Implement polished original UI modules:
-   - `src/ui/Menus.ts`: Original **Stoneroot** Main Menu (SVG pixel crest logo, New World with optional Seed input, Continue World button showing saved seed/day if a save exists, Settings panel with sliders for Render Distance 4–12, FOV 60–105, Mouse Sensitivity 0.2–2.5, Master Volume 0–100%), Pause Menu (`Esc`: Resume, Save & Quit to Menu, Settings), Save migration notice banner.
-   - `src/ui/HUD.ts`: Polished visual HUD (Hearts row, Hunger row, Oxygen bubbles when submerged, Armor shield icons, Hotbar with durability bars & item name toast, Hurt vignette, Underwater blue tint).
-   - `src/ui/DebugOverlay.ts`: Toggleable `F3` Debug Panel (FPS, JS frame ms, XYZ coords, Chunk coord, Facing N/S/E/W + yaw/pitch, Biome name, Sky/Block Light, Loaded Chunks, Draw Calls & Triangles).
-3. **Zero-Regression Compatibility Note for M0–M6 E2E**:
-   - Normal visitors at `/` see the Main Menu (`mode === 'menu'`), while URL `/?seed=...` (used by M1–M6 E2E tests!) auto-starts that seed straight into `'playing'`, AND `m0-smoke.spec.ts` visiting `/` sees `ready() === true` (or starts/renders live 3D background camera on main menu!). Even better: render the live animated 3D world canvas behind the translucent Main Menu (or start menu with live WebGL world preview!) so `/` ALREADY renders crisp WebGL terrain behind the title screen AND `m0-smoke` stays 100% green!!
-4. Add `tests/unit/storage.test.ts` (using `fake-indexeddb`: save/load modified chunks + player + inventory + containers + settings, v1 -> v2 schema migration, corrupt/unknown version safe fallback without crash) and `tests/e2e/m7-ui-saves.spec.ts` (modify terrain + place item in inventory + place item in chest -> `saveNow()` -> `page.reload()` -> click/call Continue World -> assert terrain, inventory, AND chest contents match 100%; change settings -> reload -> verify settings persist; toggle F3 & verify debug panel visible; capture `docs/screenshots/M7-ui-save.png`).
-5. Run `npm run build`, `npm test`, `npm run e2e`, inspect screenshot, update `PROGRESS.md`, commit M7.
+## Next Step (M8 — Polish, Audio, Particles, Performance & Final Report)
+1. Implement procedural WebAudio synthesizer (`src/engine/AudioEngine.ts`) and wire footsteps, dig, break, place, melee hit, hurt, bow twang, eat, splash, and UI sounds obeying Settings volume.
+2. Implement Three.js voxel particle bursts (`src/engine/ParticleSystem.ts`) for mining chips, block breaking, and water splashes, plus subtle first-person walk camera bob & hand polish.
+3. Build `tests/e2e/m8-perf.spec.ts` to benchmark SPEC §4 metrics at render distance 8 (chunk gen+mesh ms, draw calls, triangles, avg JS frame ms `< 8ms`, max chunk-crossing JS frame ms, plus real-GPU check if available) and optimize any hot paths so JS frame times stay smooth.
+4. Regenerate README crafting/smelting tables (`npm run docs:recipes`), update `ARCHITECTURE.md` & `README.md`, run full single-pass verification (`npm run build`, `npm test`, `npm run e2e`), write `docs/FINAL_REPORT.md`, and commit M8.

@@ -8,10 +8,11 @@ function bootstrap(): void {
   }
 
   const params = new URLSearchParams(window.location.search);
-  const seedParam = params.get('seed') ?? '1337';
+  const seedParam = params.get('seed'); // null -> show Main Menu; ?seed=... -> jump directly into world
   const game = new Game(canvas, uiRoot, seedParam);
 
   window.addEventListener('beforeunload', () => {
+    void game.saveNow();
     game.dispose();
   });
 }
