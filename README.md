@@ -4,7 +4,7 @@
 
 **一款完全原创、零外部素材的浏览器端第一人称体素生存沙盒游戏**
 
-**简体中文** | [English](./README.en.md)
+**简体中文** | [English](./README.en.md) | 📖 [完整玩家使用手册](./USER_MANUAL.md)
 
 ![TypeScript](https://img.shields.io/badge/TypeScript-Strict-3178C6?logo=typescript&logoColor=white)
 ![Three.js](https://img.shields.io/badge/Three.js-WebGL-000000?logo=threedotjs&logoColor=white)
